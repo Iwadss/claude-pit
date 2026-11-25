@@ -1,0 +1,533 @@
+<title>Kokpit Claude</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Your Claude schedules, hooks, plugins, MCP servers, skills and agents on one page.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: glass-cockpit panel. Sticky header (search + section tabs), instrument tiles,
+   a dark departures board for runs, then reference lists. B612 is the Airbus cockpit typeface;
+   colours follow flight-deck convention: green normal, amber caution, red warning, cyan info. */
+:root{
+  --bg:#EDF1F5; --panel:#FFFFFF; --sunk:#F4F7FA; --ink:#0E1A26; --muted:#556575; --line:#D3DCE5; --chip:#E6EDF3;
+  --accent:#0A7480; --ok:#1D7A4C; --caution:#A35F00; --warning:#B3261E;
+  --board:#0B141D; --board-line:#1D2B39; --board-ink:#E8F0F6; --board-dim:#8DA0B2; --board-amber:#F4B54A;
+  --f-display:"B612","Inter",system-ui,sans-serif;
+  --f-body:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"B612 Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0A1118; --panel:#101A24; --sunk:#0D161F; --ink:#E3EBF2; --muted:#93A4B5; --line:#213141; --chip:#192634;
+  --accent:#53CED8; --ok:#5BC98A; --caution:#F2B04A; --warning:#F2766B; --board:#05090D; --board-line:#192735;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0A1118; --panel:#101A24; --sunk:#0D161F; --ink:#E3EBF2; --muted:#93A4B5; --line:#213141; --chip:#192634;
+  --accent:#53CED8; --ok:#5BC98A; --caution:#F2B04A; --warning:#F2766B; --board:#05090D; --board-line:#192735;
+  color-scheme:dark}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-body);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+code{font-family:var(--f-mono);font-size:.82rem}
+.muted{color:var(--muted)}
+.wrap{max-width:1160px;margin-inline:auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+
+/* header */
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--panel)}
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--panel);border-bottom:1px solid var(--line)}
+.top-in{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;padding-block:12px 8px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 260px}
+.brand svg{flex:none}
+.brand h1{margin:0;font:700 1.05rem/1.1 var(--f-display);letter-spacing:.08em;text-transform:uppercase}
+.stamp{margin:3px 0 0;color:var(--muted);font-size:.8rem;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tools{display:flex;gap:8px;flex:1 1 300px;max-width:460px}
+#q{flex:1;min-width:0;font:inherit;font-size:.92rem;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);color:var(--ink)}
+.btn{font:600 .85rem var(--f-body);padding:8px 12px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--accent);color:var(--panel)}
+.nav{display:flex;gap:2px;overflow-x:auto;padding-block:0 8px;scrollbar-width:none}
+.nav::-webkit-scrollbar{display:none}
+.nav a{flex:none;font:700 .72rem var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-decoration:none;padding:6px 10px;border-radius:6px}
+.nav a:hover{color:var(--ink);background:var(--chip)}
+.nav .n{font-family:var(--f-mono);color:var(--accent);margin-left:5px}
+
+/* sections */
+main{padding-bottom:24px}
+.sec{padding-top:34px;scroll-margin-top:130px}
+@media (max-width:640px){.sec{scroll-margin-top:170px}}
+.sec-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+h2{margin:0;font:700 1rem/1.2 var(--f-display);letter-spacing:.08em;text-transform:uppercase;text-wrap:balance}
+h3{margin:0;font:700 1.05rem/1.3 var(--f-display);text-wrap:balance}
+.count{font:700 .8rem var(--f-mono);color:var(--accent)}
+.lede{margin:0 0 14px;color:var(--muted);max-width:68ch}
+
+/* pills and chips */
+.pill{display:inline-flex;align-items:center;font:700 .66rem/1 var(--f-mono);letter-spacing:.06em;text-transform:uppercase;padding:4px 7px;border-radius:4px;border:1px solid currentColor;white-space:nowrap}
+.ok{color:var(--ok)} .caution{color:var(--caution)} .warning{color:var(--warning)} .info{color:var(--accent)} .off{color:var(--muted)}
+.chip{display:inline-block;font:500 .75rem/1.3 var(--f-body);padding:3px 8px;border-radius:4px;background:var(--chip);color:var(--muted);overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+
+/* overview */
+.ov{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:14px;margin-top:14px}
+@media (max-width:860px){.ov{grid-template-columns:1fr}}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:10px}
+.tile{display:grid;gap:2px;align-content:start;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;text-decoration:none;color:inherit}
+.tile:hover{border-color:var(--accent)}
+.tile .k{font:700 .66rem var(--f-display);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;gap:6px;align-items:center}
+.tile .v{font:700 2rem/1.15 var(--f-mono);font-variant-numeric:tabular-nums}
+.tile .s{color:var(--muted);font-size:.8rem}
+.lamp{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+
+/* departures board */
+.board{background:var(--board);color:var(--board-ink);border-radius:var(--r);padding:16px 18px;min-width:0}
+.lbl{font:700 .68rem var(--f-display);letter-spacing:.12em;text-transform:uppercase;color:var(--board-dim)}
+.next-time{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin-top:8px}
+.next-time .t{font:700 clamp(2.4rem,7vw,3.4rem)/1 var(--f-mono);color:var(--board-amber);font-variant-numeric:tabular-nums}
+.next-time .d{font:700 1rem var(--f-mono);text-transform:uppercase}
+.next-time .in{font:700 .95rem var(--f-mono);color:var(--board-amber)}
+.next-name{font:700 1.15rem/1.3 var(--f-display);margin-top:10px;overflow-wrap:anywhere}
+.next-meta{color:var(--board-dim);font-size:.85rem;margin-top:2px}
+.brows{margin-top:10px}
+.brow{display:grid;grid-template-columns:4.6rem 7.4rem minmax(0,1fr) minmax(0,11rem);gap:12px;align-items:baseline;padding:9px 0;border-top:1px solid var(--board-line);font-variant-numeric:tabular-nums}
+.brow .t{font:700 1.05rem var(--f-mono);color:var(--board-amber)}
+.brow .d,.brow .w{font:400 .8rem var(--f-mono);color:var(--board-dim);text-transform:uppercase}
+.brow .n{font-weight:600;overflow-wrap:anywhere}
+.brow .wm{display:none}
+.brow.head{border-top:0;padding-top:4px}
+.brow.head span{font:700 .64rem var(--f-display);letter-spacing:.12em;color:var(--board-dim);text-transform:uppercase}
+.more{color:var(--board-dim);font-size:.8rem;padding-top:8px;border-top:1px solid var(--board-line)}
+@media (max-width:640px){
+  .brow{grid-template-columns:4.2rem minmax(0,1fr);grid-template-areas:"t n" "t d";row-gap:1px}
+  .brow .t{grid-area:t}.brow .n{grid-area:n}.brow .d{grid-area:d}.brow .w,.brow.head{display:none}.brow .wm{display:inline}
+}
+
+/* system map */
+.map{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:30px;margin-top:4px}
+.col{position:relative;display:grid;gap:8px;align-content:start;min-width:0}
+.col>.k{font:700 .66rem var(--f-display);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.col:not(:last-child)::after{content:"";position:absolute;top:50%;right:-21px;width:12px;height:12px;border-top:2px solid var(--accent);border-right:2px solid var(--accent);transform:translateY(-50%) rotate(45deg)}
+.node{display:block;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;text-decoration:none;color:inherit;min-width:0}
+.node:hover{border-color:var(--accent)}
+.node b{display:flex;justify-content:space-between;gap:8px;font-weight:600}
+.node b span{font-family:var(--f-mono);color:var(--accent)}
+.node small{display:block;color:var(--muted);font-size:.78rem;margin-top:2px;overflow-wrap:anywhere}
+@media (max-width:860px){
+  .map{grid-template-columns:1fr;gap:28px}
+  .col{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .col>.k{grid-column:1/-1}
+  .col:not(:last-child)::after{top:auto;bottom:-21px;right:auto;left:20px;transform:rotate(135deg)}
+}
+
+/* automation cards */
+.autos{display:grid;gap:14px;margin-top:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px;min-width:0}
+.card-h{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
+.card-h h3{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+.flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px;margin:16px 0}
+.step{position:relative;background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
+.step .k{font:700 .64rem var(--f-display);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.step b{display:block;font-weight:600;overflow-wrap:anywhere}
+.step small{display:block;color:var(--muted);font-size:.78rem;overflow-wrap:anywhere}
+.step:not(:last-child)::after{content:"";position:absolute;top:50%;right:-16px;width:9px;height:9px;border-top:2px solid var(--muted);border-right:2px solid var(--muted);transform:translateY(-50%) rotate(45deg)}
+@media (max-width:760px){
+  .flow{grid-template-columns:1fr;gap:18px}
+  .step:not(:last-child)::after{top:auto;bottom:-14px;right:auto;left:18px;transform:rotate(135deg)}
+}
+.meta{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 18px;margin:0}
+.meta dt{font:700 .66rem/2 var(--f-display);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.meta dd{margin:0;min-width:0;overflow-wrap:anywhere}
+@media (max-width:520px){.meta{grid-template-columns:1fr;gap:0}.meta dd{margin-bottom:8px}}
+.runs{display:grid;gap:4px}
+.run{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none;display:inline-block}
+details.prompt{margin-top:14px}
+details.prompt summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:.9rem}
+details.prompt pre{white-space:pre-wrap;overflow-wrap:anywhere;font:.8rem/1.6 var(--f-mono);background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:12px;margin:8px 0 0;max-height:440px;overflow:auto}
+
+/* lists */
+.group{margin-top:20px}
+.group:first-of-type{margin-top:6px}
+.group-h{margin:0 0 8px}
+.group-h h3{font-size:.8rem;letter-spacing:.08em;text-transform:uppercase}
+.group-h p{margin:2px 0 0;color:var(--muted);font-size:.82rem}
+.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:10px}
+.item{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:11px 14px;min-width:0}
+.item-h{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
+.nm{font:700 .88rem var(--f-mono);overflow-wrap:anywhere;min-width:0}
+.ver{font:400 .74rem var(--f-mono);color:var(--muted)}
+.item-h .end{margin-left:auto}
+.desc{margin:6px 0 0;color:var(--muted);font-size:.85rem}
+.item .chips{margin-top:8px}
+.list.empty::after,.rows.empty::after{content:"No matches.";color:var(--muted);font-size:.9rem}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px}
+.seg button{font:600 .82rem var(--f-body);padding:7px 12px;border:0;background:var(--panel);color:var(--muted);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--panel)}
+.rows{display:grid;gap:8px}
+.hrow{display:grid;grid-template-columns:minmax(0,13rem) minmax(0,7rem) minmax(0,1fr) minmax(0,9rem);gap:12px;align-items:baseline;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+.hrow code{overflow-wrap:anywhere}
+@media (max-width:760px){.hrow{grid-template-columns:1fr;gap:3px}}
+details.fold{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+details.fold>summary{cursor:pointer;padding:12px 16px;font:700 .8rem var(--f-display);letter-spacing:.08em;text-transform:uppercase;list-style:none;display:flex;gap:10px;align-items:baseline}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::before{content:"+";font-family:var(--f-mono);color:var(--accent);width:1ch}
+details.fold[open]>summary::before{content:"\2212"}
+details.fold>.list{padding:0 12px 12px}
+
+/* health */
+.checks{display:grid;gap:8px}
+.check{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;align-items:start;background:var(--panel);border:1px solid var(--line);border-left:4px solid currentColor;border-radius:6px;padding:10px 14px}
+.check .pill{grid-row:span 2}
+.check b{font-weight:600;color:var(--ink)}
+.check p{margin:0;color:var(--muted);font-size:.86rem;overflow-wrap:anywhere}
+
+/* footer */
+.foot{padding-block:28px 40px;margin-top:36px;border-top:1px solid var(--line)}
+.how{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;margin:12px 0 16px}
+.how div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.how b{display:block;font:700 .68rem var(--f-display);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin-bottom:4px}
+.how p{margin:0;font-size:.88rem}
+.fine{color:var(--muted);font-size:.8rem;margin:0;max-width:80ch}
+.emptystate{padding:64px 0;text-align:center;color:var(--muted)}
+</style>
+
+<header class="top">
+  <div class="wrap top-in">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <rect width="34" height="34" rx="7" style="fill:var(--board)"/>
+        <path d="M8 22a9 9 0 1 1 18 0" fill="none" style="stroke:var(--accent)" stroke-width="2.4" stroke-linecap="round"/>
+        <path d="M17 22 22.5 13.5" style="stroke:var(--board-amber)" stroke-width="2.4" stroke-linecap="round"/>
+        <circle cx="17" cy="22" r="2.2" style="fill:var(--board-ink)"/>
+      </svg>
+      <div><h1>Kokpit Claude</h1><p class="stamp" id="stamp">Loading snapshot…</p></div>
+    </div>
+    <div class="tools">
+      <input id="q" type="search" placeholder="Search skills, plugins, MCP, agents  ( / )" aria-label="Search" autocomplete="off">
+      <button class="btn" id="install" type="button" hidden>Install as app</button>
+    </div>
+  </div>
+  <nav class="wrap nav" id="nav" aria-label="Sections"></nav>
+</header>
+<main class="wrap" id="app"></main>
+<footer class="wrap foot">
+  <h2>Keep it fresh</h2>
+  <div class="how">
+    <div><b>Refresh</b><p>In Claude Code type <code>/kokpit</code>. Claude pulls your routines, rebuilds this page and republishes it to the same link.</p></div>
+    <div><b>On your Mac</b><p>Open this page in the Claude desktop app and choose <i>Install as app</i> for its own window and Dock icon.</p></div>
+    <div><b>On your phone</b><p>Open it from Artifacts in the Claude app, or add the link to your home screen.</p></div>
+  </div>
+  <p class="fine">Built by collect.py from the Claude config on your computer. Tokens, env vars, headers and command arguments are never copied. Routine prompts are shown in full, so share this page only with people who may read them. Source: <a href="https://github.com/Iwadss/kokpit-claude">github.com/Iwadss/kokpit-claude</a></p>
+</footer>
+
+<script type="application/json" id="kokpit-data">"__KOKPIT_DATA__"</script>
+<script>
+(() => {
+"use strict";
+const $ = (id) => document.getElementById(id);
+let D = null;
+try { const v = JSON.parse($("kokpit-data").textContent); if (v && typeof v === "object") D = v; } catch (e) { /* empty state below */ }
+if (!D) {
+  $("app").innerHTML = '<div class="emptystate"><h2>No snapshot yet</h2><p>Run <code>python3 collect.py</code> to build this page from your Claude setup.</p></div>';
+  $("stamp").textContent = "No data";
+  return;
+}
+for (const k of ["automations", "hooks", "plugins", "mcp", "skills", "agents", "commands", "health"]) D[k] = D[k] || [];
+
+// ---------- helpers
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const lc = (...xs) => esc(xs.join(" ").toLowerCase());
+const T = {
+  time: { hour: "2-digit", minute: "2-digit" },
+  day: { weekday: "short", day: "numeric", month: "short" },
+  full: { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" },
+  date: { day: "numeric", month: "short", year: "numeric" },
+};
+const fmt = (iso, o) => (iso && !isNaN(Date.parse(iso)) ? new Intl.DateTimeFormat(undefined, o).format(new Date(iso)) : "—");
+function rel(iso) {
+  const ms = Date.parse(iso) - Date.now(), m = Math.round(Math.abs(ms) / 60000);
+  if (isNaN(ms)) return "";
+  if (m < 1) return "now";
+  const s = m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
+  return ms > 0 ? `in ${s}` : `${s} ago`;
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const SRC = (s) => (s.startsWith("plugin:") ? `${s.slice(7)} plugin` : s.startsWith("project:") ? `${s.slice(8)} project` : s === "you" ? "yours" : s);
+function MODEL(m) {
+  const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m || "");
+  if (x) return `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}.${x[3]}`;
+  return m ? m[0].toUpperCase() + m.slice(1) : "";
+}
+const EVENTS = {
+  SessionStart: "When a session starts", SessionEnd: "When a session ends", UserPromptSubmit: "Every prompt you send",
+  PreToolUse: "Before each tool call", PostToolUse: "After each tool call", Stop: "When Claude finishes a reply",
+  SubagentStart: "When a subagent starts", SubagentStop: "When a subagent finishes", Notification: "When Claude sends a notification", PreCompact: "Before context is compacted",
+};
+const LEVEL = { warning: "Warning", caution: "Caution", info: "Note", ok: "OK" };
+const RUN = { succeeded: "ok", failed: "warning", running: "info" };
+
+function upcomingRuns(days) {
+  const now = Date.now(), end = now + days * 864e5, rows = [];
+  for (const a of D.automations) {
+    if (!a.enabled) continue;
+    const times = a.upcoming && a.upcoming.length ? a.upcoming : a.next_run_at ? [a.next_run_at] : [];
+    for (const t of times) { const ms = Date.parse(t); if (ms > now && ms <= end) rows.push({ a, t }); }
+  }
+  return rows.sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
+}
+function issues() {
+  const list = D.health.slice();
+  const age = Date.now() - Date.parse(D.generated_at);
+  if (age > 3 * 864e5) list.unshift({ level: "caution", title: "This snapshot is " + rel(D.generated_at).replace(" ago", " old"), detail: "Type /kokpit in Claude Code to refresh it." });
+  if (!D.routines_synced_at) list.unshift({ level: "info", title: "Cloud routines not synced yet", detail: "Type /kokpit in Claude Code to pull them in." });
+  return list;
+}
+
+// ---------- header
+function stamp() {
+  const age = Date.now() - Date.parse(D.generated_at);
+  $("stamp").innerHTML = `Snapshot ${esc(fmt(D.generated_at, T.full))} · ${esc(rel(D.generated_at))}` +
+    (age > 3 * 864e5 ? ' <span class="pill caution">Stale</span>' : "");
+}
+const SECTIONS = [
+  ["overview", "Overview"], ["schedules", "Schedules", D.automations.length], ["hooks", "Hooks", D.hooks.length],
+  ["plugins", "Plugins", D.plugins.length], ["mcp", "MCP", D.mcp.length], ["skills", "Skills", D.skills.length],
+  ["agents", "Agents", D.agents.length + D.commands.length], ["health", "Health"],
+];
+$("nav").innerHTML = SECTIONS.map(([id, label, n]) => `<a href="#${id}">${label}${n == null ? "" : `<span class="n">${n}</span>`}</a>`).join("");
+
+// ---------- overview
+function nextRun() {
+  const r = upcomingRuns(60)[0];
+  if (!r) return `<div class="board"><div class="lbl">Next run</div><div class="next-name">Nothing scheduled</div><div class="next-meta">Make one with /schedule in Claude Code, or ask Cowork to run a task on a schedule.</div></div>`;
+  const { a, t } = r;
+  return `<div class="board"><div class="lbl">Next run</div>
+    <div class="next-time"><span class="t">${esc(fmt(t, T.time))}</span><span class="d">${esc(fmt(t, T.day))}</span><span class="in">${esc(rel(t))}</span></div>
+    <div class="next-name">${esc(a.name)}</div>
+    <div class="next-meta">${esc([a.where, a.schedule, a.tz].filter(Boolean).join(" · "))}</div></div>`;
+}
+function tiles() {
+  const by = (arr, s) => arr.filter((x) => x.surface === s).length;
+  const all = issues(), bad = all.filter((x) => x.level === "warning" || x.level === "caution");
+  const lamp = all.some((x) => x.level === "warning") ? "warning" : bad.length ? "caution" : "ok";
+  const t = [
+    ["schedules", "Automations", D.automations.length, `${D.automations.filter((a) => a.enabled).length} active · ${plural(D.hooks.length, "hook")}`],
+    ["plugins", "Plugins", D.plugins.length, `Code ${by(D.plugins, "code")} · Chat ${by(D.plugins, "chat")}`],
+    ["mcp", "MCP & connectors", D.mcp.length, `claude.ai ${by(D.mcp, "claude.ai")} · Code ${by(D.mcp, "code") + by(D.mcp, "chat")} · App ${by(D.mcp, "app")}`],
+    ["skills", "Skills", D.skills.length, `Code ${by(D.skills, "code")} · Chat ${by(D.skills, "chat")}`],
+    ["agents", "Agents", D.agents.length, plural(D.commands.length, "slash command")],
+    ["health", "Health", bad.length, bad.length ? "to check" : `all clear · ${plural(all.filter((x) => x.level === "info").length, "note")}`, lamp],
+  ];
+  return `<div class="tiles">${t.map(([href, k, v, s, l]) => `<a class="tile" href="#${href}"><span class="k">${l ? `<span class="lamp ${l}"></span>` : ""}${esc(k)}</span><span class="v">${v}</span><span class="s">${esc(s)}</span></a>`).join("")}</div>`;
+}
+function map() {
+  const autos = D.automations, on = autos.filter((a) => a.enabled);
+  const events = [...new Set(D.hooks.map((h) => h.event))];
+  const cloud = autos.filter((a) => a.kind === "cloud").length;
+  const push = autos.filter((a) => a.notify && a.notify.push).length, mail = autos.filter((a) => a.notify && a.notify.email).length;
+  const used = [...new Set(autos.flatMap((a) => a.connectors || []))].map((n) => n.replace(/_/g, " "));
+  const by = (arr, s) => arr.filter((x) => x.surface === s).length;
+  const s = D.settings || {};
+  const col = (k, nodes) => `<div class="col"><div class="k">${k}</div>${nodes.map(([href, name, n, sub]) =>
+    `<a class="node" href="#${href}"><b>${esc(name)}${n == null ? "" : `<span>${n}</span>`}</b><small>${esc(sub)}</small></a>`).join("")}</div>`;
+  return `<div class="map">${[
+    col("Triggers", [
+      ["schedules", "Schedules", autos.length, on.slice(0, 2).map((a) => a.schedule).join(", ") || "None yet"],
+      ["hooks", "Event hooks", D.hooks.length, events.join(", ") || "None"],
+      ["skills", "You", null, "Chat, /commands, @agents"],
+    ]),
+    col("Claude", [
+      ["plugins", "Claude Code", null, [MODEL(s.model), s.effort && `${s.effort} effort`].filter(Boolean).join(" · ") || "Terminal and desktop"],
+      ["plugins", "Claude app", null, "Chat and Cowork on claude.ai"],
+      ["schedules", "Claude cloud", cloud, cloud ? "Runs routines while your Mac sleeps" : "No cloud routines"],
+    ]),
+    col("Abilities", [
+      ["skills", "Skills", D.skills.length, `Code ${by(D.skills, "code")} · Chat ${by(D.skills, "chat")}`],
+      ["plugins", "Plugins", D.plugins.length, `Code ${by(D.plugins, "code")} · Chat ${by(D.plugins, "chat")}`],
+      ["agents", "Agents", D.agents.length, plural(D.commands.length, "slash command")],
+      ["mcp", "MCP & connectors", D.mcp.length, `${by(D.mcp, "claude.ai")} on claude.ai`],
+    ]),
+    col("Results", [
+      ["schedules", "Notifications", push + mail, [push && `push ×${push}`, mail && `email ×${mail}`].filter(Boolean).join(", ") || "None set"],
+      ["schedules", "Run sessions", null, "Each cloud run is saved as a session"],
+      ["mcp", "Connector actions", used.length, used.length ? used.slice(0, 3).join(", ") + (used.length > 3 ? ` +${used.length - 3}` : "") : "None"],
+    ]),
+  ].join("")}</div>`;
+}
+
+// ---------- schedules
+function board() {
+  const rows = upcomingRuns(7), shown = rows.slice(0, 14);
+  return `<div class="board"><div class="lbl">Upcoming · next 7 days</div><div class="brows">
+    <div class="brow head"><span>Time</span><span>Day</span><span>Automation</span><span>Where</span></div>
+    ${shown.map(({ a, t }) => `<div class="brow"><span class="t">${esc(fmt(t, T.time))}</span><span class="d">${esc(fmt(t, T.day))}<span class="wm"> · ${esc(a.where)}</span></span><span class="n">${esc(a.name)}</span><span class="w">${esc(a.where)}</span></div>`).join("")
+      || '<div class="brow"><span class="t">--:--</span><span class="n">No runs in the next 7 days</span></div>'}
+    ${rows.length > shown.length ? `<div class="more">+${rows.length - shown.length} more runs this week</div>` : ""}</div></div>`;
+}
+function autoCard(a) {
+  const st = a.problem ? ["warning", "Stopped"] : a.enabled ? ["ok", "Active"] : ["caution", "Paused"];
+  const conn = (a.connectors || []).map((n) => n.replace(/_/g, " "));
+  const out = [a.notify && a.notify.push && "Push", a.notify && a.notify.email && "Email"].filter(Boolean);
+  const local = a.kind === "launchd" || a.kind === "cron";
+  const steps = [
+    ["Trigger", a.schedule, a.tz],
+    ["Runs on", a.where, [MODEL(a.model), a.permission_mode && `${a.permission_mode} mode`].filter(Boolean).join(" · ") || a.origin],
+    ["Uses", conn.length ? plural(conn.length, "connector") : local ? "Shell command" : "Built-in tools", conn.length ? conn.slice(0, 3).join(", ") + (conn.length > 3 ? ` +${conn.length - 3}` : "") : ""],
+    ["Result", local ? "Command output" : out.length ? `${out.join(" + ")} notification` : "Saved session", local ? "" : a.keeps_session ? "Same ongoing session" : "New session each run"],
+  ];
+  const runs = (a.runs || []).length
+    ? `<div class="runs">${a.runs.map((r) => `<div class="run"><span class="dot ${RUN[r.status] || "off"}"></span><span>${esc(fmt(r.started_at, T.full))}</span><span class="muted">${esc(r.status || "")}</span><span>${esc(r.title || "")}</span>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open</a>` : ""}</div>`).join("")}</div>`
+    : '<span class="muted">No runs yet</span>';
+  const nx = a.enabled && a.next_run_at ? `${esc(fmt(a.next_run_at, T.full))} <span class="muted">(${esc(rel(a.next_run_at))})</span>` : "—";
+  const row = (k, v) => (v ? `<dt>${k}</dt><dd>${v}</dd>` : "");
+  return `<article class="card">
+    <div class="card-h"><h3>${esc(a.name)}</h3><span class="pill ${st[0]}">${st[1]}</span><span class="chip">${esc(a.origin)}</span></div>
+    <div class="flow">${steps.map(([k, b, s]) => `<div class="step"><div class="k">${k}</div><b>${esc(b || "—")}</b>${s ? `<small>${esc(s)}</small>` : ""}</div>`).join("")}</div>
+    <dl class="meta">
+      ${row("Schedule", `${esc(a.schedule)}${a.cron ? ` <code class="muted">${esc(a.cron)}</code>` : ""}`)}
+      ${row("Next run", nx)}
+      ${row("Recent runs", runs)}
+      ${row("Problem", a.problem ? `<span class="warning">${esc(a.problem)}</span>` : "")}
+      ${row("Model", esc(a.model))}
+      ${row("Permissions", esc(a.permission_mode))}
+      ${row("Notifies", esc(out.join(", ") || (local ? "" : "No notification")))}
+      ${row("Command", a.command ? `<code>${esc(a.command)}</code>` : "")}
+      ${row("Connectors", conn.length ? `<div class="chips">${conn.map((n) => `<span class="chip">${esc(n)}</span>`).join("")}</div>` : "")}
+      ${row("Folders", (a.folders || []).map(esc).join(", "))}
+      ${row("Created", a.created_at ? esc(fmt(a.created_at, T.date)) : "")}
+      ${row("ID", a.id ? `<code class="muted">${esc(a.id)}</code>` : "")}
+    </dl>
+    ${a.prompt ? `<details class="prompt"><summary>Show prompt (${plural(a.prompt.length, "character")})</summary><pre>${esc(a.prompt)}</pre></details>` : ""}
+  </article>`;
+}
+
+// ---------- reference lists
+const item = (name, desc, chips, end, extra) => `<div class="item"${extra}><div class="item-h"><span class="nm">${esc(name)}</span>${end || ""}</div>${desc ? `<p class="desc">${esc(desc)}</p>` : ""}${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+const chip = (t, cls) => (t ? `<span class="chip${cls ? " " + cls : ""}">${esc(t)}</span>` : "");
+const group = (title, note, inner) => `<div class="group"><div class="group-h"><h3>${esc(title)}</h3>${note ? `<p>${esc(note)}</p>` : ""}</div>${inner}</div>`;
+const list = (rows) => `<div class="list">${rows.join("")}</div>`;
+
+function hooks() {
+  if (!D.hooks.length) return '<p class="muted">No hooks. A hook runs a command on an event, such as session start or each prompt.</p>';
+  return `<div class="rows">${D.hooks.map((h) => `<div class="hrow" data-s="${lc(h.event, h.matcher, h.command, h.source)}">
+    <div><b>${esc(h.event)}</b><br><small class="muted">${esc(EVENTS[h.event] || "")}</small></div>
+    <code>${esc(h.matcher || "any")}</code><code>${esc(h.command)}</code><span>${chip(SRC(h.source))}</span></div>`).join("")}</div>`;
+}
+function plugins() {
+  const row = (p) => {
+    const c = p.counts || {};
+    const parts = [["skills", c.skills], ["commands", c.commands], ["agents", c.agents], ["hooks", c.hooks], ["MCP", c.mcp]]
+      .filter(([, n]) => n).map(([k, n]) => chip(`${n} ${k}`)).join("");
+    return item(p.name, p.description, parts + chip(p.marketplace ? `from ${p.marketplace}` : ""),
+      `${p.version ? `<span class="ver">v${esc(p.version)}</span>` : ""}<span class="pill end ${p.enabled ? "ok" : "off"}">${p.enabled ? "On" : "Off"}</span>`,
+      ` data-s="${lc(p.name, p.description, p.marketplace)}"`);
+  };
+  const code = D.plugins.filter((p) => p.surface === "code"), chat = D.plugins.filter((p) => p.surface === "chat");
+  return group("Claude Code", "Installed with /plugin in Claude Code.", list(code.map(row))) +
+    group("Claude Chat (claude.ai)", "Turned on in claude.ai. They also sync into Claude Code.", list(chat.map(row)));
+}
+function mcp() {
+  const row = (m) => {
+    const status = m.status === "needs sign-in" ? "caution" : m.status === "enabled" ? "ok" : m.status === "disabled" ? "off" : "";
+    return item(m.name, "", chip(m.scope === "connector" ? "" : SRC(m.scope)) + chip(m.transport) + chip(m.host) + chip(m.version ? `v${m.version}` : ""),
+      status ? `<span class="pill end ${status}">${esc(m.status)}</span>` : "", ` data-s="${lc(m.name, m.scope, m.host, m.status)}"`);
+  };
+  const g = [
+    ["claude.ai connectors", "claude.ai", "On your account. Claude chat, Cowork, cloud routines and Claude Code can all use them."],
+    ["Claude Code", "code", "From your settings, projects and Claude Code plugins."],
+    ["claude.ai plugins", "chat", "Servers that ship with claude.ai plugins (synced into Claude Code)."],
+    ["Claude desktop app", "app", "Desktop extensions and claude_desktop_config.json."],
+  ];
+  return g.map(([title, s, note]) => {
+    const rows = D.mcp.filter((m) => m.surface === s);
+    return rows.length ? group(`${title} · ${rows.length}`, note, list(rows.map(row))) : "";
+  }).join("") || '<p class="muted">No MCP servers found.</p>';
+}
+function skills() {
+  const n = (s) => D.skills.filter((x) => x.surface === s).length;
+  const seg = `<div class="seg" role="group" aria-label="Filter skills">${[["all", "All", D.skills.length], ["code", "Claude Code", n("code")], ["chat", "Claude Chat", n("chat")]]
+    .map(([v, l, c], i) => `<button type="button" data-surface="${v}" aria-pressed="${i === 0}">${l} · ${c}</button>`).join("")}</div>`;
+  return seg + list(D.skills.map((s) => item(s.name, s.description, "", `<span class="end">${chip(SRC(s.source))}</span>`,
+    ` data-surface="${esc(s.surface)}" data-s="${lc(s.name, s.description, s.source)}"`)));
+}
+function agents() {
+  const fold = (title, rows) => `<details class="fold"><summary>${esc(title)} <span class="count">${rows.length}</span></summary>${list(rows)}</details>`;
+  return fold("Agents", D.agents.map((a) => item(a.name, a.description, "", `<span class="end">${chip(SRC(a.source))}</span>`, ` data-s="${lc(a.name, a.description, a.source)}"`))) +
+    fold("Slash commands", D.commands.map((c) => item("/" + c.name, c.description, "", `<span class="end">${chip(SRC(c.source))}</span>`, ` data-s="${lc(c.name, c.description, c.source)}"`)));
+}
+function health() {
+  return `<div class="checks">${issues().map((h) => `<div class="check ${esc(h.level)}"><span class="pill ${esc(h.level)}">${LEVEL[h.level] || esc(h.level)}</span><b>${esc(h.title)}</b><p>${esc(h.detail)}</p></div>`).join("")}</div>`;
+}
+
+// ---------- page
+const sec = (id, title, n, lede, body) => `<section class="sec" id="${id}"><div class="sec-h"><h2>${title}</h2>${n == null ? "" : `<span class="count" data-count="${id}">${n}</span>`}</div>${lede ? `<p class="lede">${lede}</p>` : ""}${body}</section>`;
+$("app").innerHTML = [
+  sec("overview", "Overview", null, "", `<div class="ov"><div id="nextrun">${nextRun()}</div>${tiles()}</div>
+    <div class="sec-h" style="margin-top:28px"><h2>How it fits together</h2></div><p class="lede">What starts Claude, where it runs, what it can use and where results go. Tap a box to jump to its list.</p>${map()}`),
+  sec("schedules", "Schedules", null, "Everything Claude runs on a timer: cloud routines, Cowork tasks, desktop scheduled tasks and local cron or launchd jobs that call <code>claude</code>.",
+    `<div id="board">${board()}</div><div class="autos">${D.automations.map(autoCard).join("") || '<p class="muted">No scheduled automations yet.</p>'}</div>`),
+  sec("hooks", "Event hooks", D.hooks.length, "Commands Claude Code runs by itself when something happens.", hooks()),
+  sec("plugins", "Plugins", D.plugins.length, "", plugins()),
+  sec("mcp", "MCP servers & connectors", D.mcp.length, "Tools Claude can call outside itself. Status comes from Claude Code's last connection check.", mcp()),
+  sec("skills", "Skills", D.skills.length, "Instructions Claude loads when a task matches. Claude Chat skills are the claude.ai ones.", skills()),
+  sec("agents", "Agents & commands", D.agents.length + D.commands.length, "Subagents you can hand work to, and slash commands you can type.", agents()),
+  sec("health", "Health", null, "", health()),
+].join("");
+stamp();
+
+// ---------- search and filters
+const q = $("q");
+let surface = "all";
+function applyFilter() {
+  const term = q.value.trim().toLowerCase();
+  document.querySelectorAll("[data-s]").forEach((el) => {
+    const s = el.dataset.surface;
+    el.hidden = !((surface === "all" || !s || s === surface) && (!term || el.dataset.s.includes(term)));
+  });
+  document.querySelectorAll("[data-count]").forEach((label) => {
+    const all = [...document.getElementById(label.dataset.count).querySelectorAll("[data-s]")];
+    const shown = all.filter((e) => !e.hidden).length;
+    label.textContent = shown === all.length ? all.length : `${shown} of ${all.length}`;
+  });
+  document.querySelectorAll(".list, .rows").forEach((l) => l.classList.toggle("empty", !!l.querySelector("[data-s]") && !l.querySelector("[data-s]:not([hidden])")));
+  if (term) document.querySelectorAll("details.fold").forEach((d) => { d.open = true; });
+}
+q.addEventListener("input", applyFilter);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "/" && document.activeElement !== q && !/input|textarea/i.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); }
+});
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+  surface = b.dataset.surface;
+  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  applyFilter();
+}));
+
+// ---------- live clock: countdowns move without a reload
+setInterval(() => { $("nextrun").innerHTML = nextRun(); $("board").innerHTML = board(); stamp(); }, 30000);
+
+// ---------- Claude desktop app: install button and Dock icon
+function drawIcon() {
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d");
+  g.fillStyle = "#0B141D"; g.beginPath(); g.roundRect(0, 0, 256, 256, 56); g.fill();
+  g.lineCap = "round"; g.lineWidth = 18;
+  g.strokeStyle = "#53CED8"; g.beginPath(); g.arc(128, 160, 72, Math.PI, 2 * Math.PI); g.stroke();
+  g.strokeStyle = "#F4B54A"; g.beginPath(); g.moveTo(128, 160); g.lineTo(170, 98); g.stroke();
+  g.fillStyle = "#E8F0F6"; g.beginPath(); g.arc(128, 160, 14, 0, 2 * Math.PI); g.fill();
+  return c.toDataURL("image/png");
+}
+(async () => {
+  if (!window.claude || !window.claude.use) return;
+  const desktop = await window.claude.use("desktop").catch(() => null);
+  if (!desktop) return;
+  if (desktop.app && desktop.app.dock) desktop.app.dock.setIcon(drawIcon()).catch(() => {});
+  const state = await desktop.install.state().catch(() => "unavailable");
+  if (state !== "available") return;
+  const btn = $("install");
+  btn.hidden = false;
+  btn.onclick = () => desktop.install.request().then((r) => { if (r === "installed") btn.hidden = true; }).catch(() => {});
+})();
+})();
+</script>
