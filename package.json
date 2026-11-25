@@ -1,0 +1,17 @@
+{
+  "name": "claude-pit",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Dashboard for your Claude setup: automations, schedules, activity, plugins, MCP servers, skills and agents.",
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild src/main.jsx --bundle --minify --format=iife --target=es2020 --jsx-factory=React.createElement --jsx-fragment=React.Fragment --outfile=build/app.js",
+    "watch": "npm run build -- --watch",
+    "pit": "npm run build && python3 collect.py"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

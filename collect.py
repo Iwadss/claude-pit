@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Kokpit: one page that shows your whole Claude setup.
+"""Claude Pit: a dashboard of your whole Claude setup.
 
-Schedules and routines, event hooks, plugins, MCP servers and connectors,
-skills, agents and slash commands, for Claude Code and Claude (claude.ai).
+Schedules and routines, activity, event hooks, plugins, MCP servers and
+connectors, skills, agents and slash commands, for Claude Code and claude.ai.
 
-    python3 collect.py                    rebuild dist/ from local config + cached cloud data
+    python3 collect.py                    rebuild out/ from local config + cached cloud data
     python3 collect.py --routines FILE    also import a RemoteTrigger `list` result
     python3 collect.py --selftest         run the built-in checks
 
-Standard library only, Python 3.9+. Env vars, headers, URL paths, command
-arguments and tokens are never copied into the output.
+Standard library only, Python 3.9+. The React app in src/ is prebuilt into
+build/ (npm run build). Env vars, headers, URL paths, command arguments and
+tokens are never copied into the output.
 """
 import argparse
+import collections
 import datetime as dt
+import hashlib
 import json
 import plistlib
 import re
@@ -25,7 +28,7 @@ HOME = Path.home()
 CLAUDE = HOME / ".claude"
 APP = HOME / "Library" / "Application Support" / "Claude"  # Claude desktop app (macOS)
 ROOT = Path(__file__).resolve().parent
-CACHE, DIST = ROOT / "cache", ROOT / "dist"
+CACHE, OUT, BUILD = ROOT / "cache", ROOT / "out", ROOT / "build"
 NOW = dt.datetime.now(dt.timezone.utc)
 
 
@@ -285,8 +288,99 @@ def cloud_auto(r, runs):
     return a
 
 
+def flow_steps(a, flows):
+    """Step boxes for an automation's flow diagram: Claude-written labels from cache/flows.json
+    (kept while the prompt is unchanged), else the first words of the prompt's numbered lines."""
+    digest = hashlib.sha1((a.get("prompt") or a.get("command") or "").encode("utf-8")).hexdigest()[:12]
+    saved = flows.get(a["id"]) or {}
+    if saved.get("hash") == digest and saved.get("steps"):
+        return [{"label": clip(s.get("label"), 28), "sub": clip(s.get("sub"), 40)} for s in saved["steps"][:7]], "claude", digest
+    if a.get("command"):
+        return [{"label": "Run command", "sub": clip(a["command"], 40)}], "auto", digest
+    steps = []
+    # ponytail: first three words of each numbered line; /claude-pit writes proper labels into flows.json
+    for m in re.finditer(r"^\s*\d+[.)]\s+(.+)$", a.get("prompt") or "", re.M):
+        words = re.sub(r"[^\w\s'&/-]", " ", m.group(1)).split()
+        steps.append({"label": " ".join(words[:3]), "sub": ""})
+    return (steps[:7] or [{"label": "Run prompt", "sub": ""}]), "auto", digest
+
+
+def project_name(cwd):
+    if not cwd:
+        return "Unknown"
+    if "/scratch-workspaces/" in cwd:
+        return "Cowork scratch"
+    p = Path(cwd)
+    return "Home" if p == HOME else p.name
+
+
+def activity(days=30):
+    """Sessions, replies and tokens per day from Claude Code transcripts (~/.claude/projects)."""
+    zone = ZoneInfo(local_tz())
+    today = NOW.astimezone(zone).date()
+    start = today - dt.timedelta(days=days - 1)
+    per_day = {start + dt.timedelta(days=i): {"sessions": set(), "messages": 0, "output_tokens": 0, "input_tokens": 0}
+               for i in range(days)}
+    models, apps, projects, seen = collections.Counter(), {}, {}, set()
+    total_sessions, window_sessions, total_messages, first = set(), set(), 0, None
+    for f in (CLAUDE / "projects").glob("*/*.jsonl"):
+        try:
+            fh = open(f, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if "assistant" not in line:  # cheap prefilter; most lines are other kinds
+                    continue
+                try:
+                    o = json.loads(line)
+                    t = dt.datetime.fromisoformat(o["timestamp"].replace("Z", "+00:00")).astimezone(zone)
+                except (ValueError, KeyError, AttributeError, TypeError):
+                    continue
+                m = o.get("message") if isinstance(o.get("message"), dict) else {}
+                key = m.get("id") or o.get("uuid")
+                if o.get("type") != "assistant" or key in seen or m.get("model") == "<synthetic>":
+                    continue
+                seen.add(key)
+                sid = o.get("sessionId") or ""
+                total_sessions.add(sid)
+                total_messages += 1
+                first = min(first, t.date()) if first else t.date()
+                day = per_day.get(t.date())
+                if day is None:
+                    continue
+                window_sessions.add(sid)
+                u = m.get("usage") or {}
+                out = u.get("output_tokens") or 0
+                day["sessions"].add(sid)
+                day["messages"] += 1
+                day["output_tokens"] += out
+                day["input_tokens"] += sum(u.get(k) or 0 for k in
+                                           ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+                models[m.get("model") or "unknown"] += out
+                apps.setdefault(o.get("entrypoint") or "cli", set()).add(sid)
+                p = projects.setdefault(project_name(o.get("cwd")), {"sessions": set(), "last": ""})
+                p["sessions"].add(sid)
+                p["last"] = max(p["last"], t.isoformat())
+    usage = (load_json(HOME / ".claude.json", {}) or {}).get("skillUsage") or {}
+    skills_used = sorted(({"name": k, "count": v.get("usageCount", 0),
+                           "last": dt.datetime.fromtimestamp(v.get("lastUsedAt", 0) / 1000, dt.timezone.utc).isoformat()}
+                          for k, v in usage.items() if isinstance(v, dict)), key=lambda s: -s["count"])
+    rows = [{"date": d.isoformat(), "sessions": len(v["sessions"]), "messages": v["messages"],
+             "output_tokens": v["output_tokens"], "input_tokens": v["input_tokens"]} for d, v in sorted(per_day.items())]
+    return {"days": rows, "window": days,
+            "totals": {"sessions": len(total_sessions), "window_sessions": len(window_sessions), "messages": total_messages,
+                       "first_day": first.isoformat() if first else None,
+                       "active_days": sum(1 for r in rows if r["messages"])},
+            "models": [{"name": k, "output_tokens": v} for k, v in models.most_common()],
+            "apps": sorted(({"name": k, "sessions": len(v)} for k, v in apps.items()), key=lambda a: -a["sessions"]),
+            "projects": sorted(({"name": k, "sessions": len(v["sessions"]), "last": v["last"]} for k, v in projects.items()),
+                               key=lambda p: -p["sessions"])[:8],
+            "skills_used": skills_used[:10]}
+
+
 def desktop_auto(t):
-    """A Claude desktop app scheduled task, as written to cache/desktop_tasks.json by the /kokpit skill."""
+    """A Claude desktop app scheduled task, as written to cache/desktop_tasks.json by the /claude-pit skill."""
     a = schedule_fields(t.get("cronExpression") or "", t.get("nextRunAt"), tz=local_tz())
     if t.get("schedule"):
         a["schedule"] = t["schedule"]
@@ -520,7 +614,7 @@ def collect(routines_file=None):
              "mcp": mcp_rows((pc or {}).get("mcpServers"), src, needs)
              + mcp_rows((load_json(p / ".mcp.json", {}) or {}).get("mcpServers"), src, needs)}, "code")
 
-    # claude.ai skills: Anthropic's (synced here) and your uploaded ones (cached by /kokpit)
+    # claude.ai skills: Anthropic's (synced here) and your uploaded ones (cached by /claude-pit)
     for man in sorted((CLAUDE / "skills" / "synced").glob("*/manifest.json")):
         for s in (load_json(man, {}) or {}).get("skills") or []:
             items["skills"].append({"name": s.get("name") or s.get("skillId") or "?",
@@ -546,35 +640,62 @@ def collect(routines_file=None):
     autos += [desktop_auto(t) for t in load_json(CACHE / "desktop_tasks.json", []) or []]
     autos += local_jobs()
     autos.sort(key=lambda a: (not a["enabled"], a["next_run_at"] or "9999"))
+    flows = load_json(CACHE / "flows.json", {}) or {}
+    for a in autos:
+        a["steps"], a["steps_source"], a["prompt_hash"] = flow_steps(a, flows)
 
     items["mcp"] = connector_rows(routines, cfg, needs) + items["mcp"] + desktop_app_mcp()
     report = health(autos, plugins, items)
     if more:
         report.insert(0, {"level": "caution", "title": "Only the first page of routines was read",
                           "detail": "The routines API said there are more."})
-    return {"version": 1, "generated_at": NOW.isoformat(), "routines_synced_at": synced,
+    return {"version": 2, "generated_at": NOW.isoformat(), "routines_synced_at": synced,
             "timezone": local_tz(),
             "settings": {"model": settings.get("model") or "", "effort": settings.get("effortLevel") or ""},
-            "automations": autos, "plugins": plugins, **items, "health": report}
+            "automations": autos, "plugins": plugins, **items, "health": report, "activity": activity()}
 
 
 SKELETON = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             '</head><body>\n{}\n</body></html>\n')
+CSS_TAG, JS_TAG = '<link rel="stylesheet" href="app.css">', '<script src="app.js"></script>'
+
+
+def inline_safe(text):
+    """Keep inlined JS/JSON from closing its <script> early."""
+    return text.replace("</", "<\\/").replace("<!--", "<\\!--")
+
+
+LIBRARY = ("plugins", "mcp", "skills", "agents", "commands", "hooks")  # changes rarely, so it ships apart
 
 
 def build(data):
-    """dist/kokpit.html (artifact body), dist/kokpit-local.html (open in any browser), dist/data.json."""
-    tpl = (ROOT / "template.html").read_text(encoding="utf-8")
-    marker = '"__KOKPIT_DATA__"'
-    if tpl.count(marker) != 1:
-        raise SystemExit("template.html must contain %s exactly once" % marker)
-    page = tpl.replace(marker, json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c"))
-    DIST.mkdir(exist_ok=True)
-    (DIST / "kokpit.html").write_text(page, encoding="utf-8")
-    (DIST / "kokpit-local.html").write_text(SKELETON.format(page), encoding="utf-8")
-    (DIST / "data.json").write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-    return DIST / "kokpit.html"
+    """The artifact (out/index.html, app.js, app.css, data.json, library.json) and out/claude-pit.html,
+    one file that opens offline. Returns the page path and whether library.json changed."""
+    shell = (ROOT / "shell.html").read_text(encoding="utf-8")
+    if shell.count(CSS_TAG) != 1 or shell.count(JS_TAG) != 1:
+        raise SystemExit("shell.html must reference app.css and app.js exactly once")
+    try:
+        js, css = (BUILD / "app.js").read_text(encoding="utf-8"), (BUILD / "app.css").read_text(encoding="utf-8")
+    except OSError:
+        raise SystemExit("build/app.js is missing: run `npm install && npm run build` first")
+    dump = lambda obj: json.dumps(obj, ensure_ascii=False, separators=(",", ":"))  # noqa: E731
+    live = dump({k: v for k, v in data.items() if k not in LIBRARY})
+    lib = dump({k: data[k] for k in LIBRARY})
+    OUT.mkdir(exist_ok=True)
+    old = OUT / "library.json"
+    changed = not old.exists() or old.read_text(encoding="utf-8") != lib
+    for name, text in (("index.html", shell), ("app.js", js), ("app.css", css), ("data.json", live), ("library.json", lib)):
+        (OUT / name).write_text(text, encoding="utf-8")
+    one = shell.replace(CSS_TAG, "<style>" + css + "</style>").replace(
+        JS_TAG, "<script>window.__PIT_DATA__=" + inline_safe(dump(data)) + "</script><script>" + inline_safe(js) + "</script>")
+    for lib_name in ("react", "react-dom"):  # inline React when installed, so the one-file page opens offline
+        umd = ROOT / "node_modules" / lib_name / "umd" / (lib_name + ".production.min.js")
+        tag = re.search(r'<script src="https://[^"]+/%s\.production\.min\.js"></script>' % re.escape(lib_name), one)
+        if umd.exists() and tag:
+            one = one.replace(tag.group(0), "<script>" + inline_safe(umd.read_text(encoding="utf-8")) + "</script>")
+    (OUT / "claude-pit.html").write_text(SKELETON.format(one), encoding="utf-8")
+    return OUT / "index.html", changed
 
 
 # ---------------------------------------------------------------- checks
@@ -612,21 +733,33 @@ def selftest():
         f = Path(d) / "SKILL.md"
         f.write_text("---\nname: demo\ndescription: >\n  first line\n  second\n---\nbody\n", encoding="utf-8")
         assert frontmatter(f) == {"name": "demo", "description": "first line second"}
+    auto = {"id": "trig_1", "prompt": "Intro\n1. Search Gmail for job mail.\n2) Write the report, short."}
+    steps, source, digest = flow_steps(auto, {})
+    assert source == "auto" and [s["label"] for s in steps] == ["Search Gmail for", "Write the report"], steps
+    saved = {"trig_1": {"hash": digest, "steps": [{"label": "Search Gmail", "sub": "last 26 h"}]}}
+    assert flow_steps(auto, saved)[:2] == ([{"label": "Search Gmail", "sub": "last 26 h"}], "claude")
+    assert flow_steps(dict(auto, prompt="changed"), saved)[1] == "auto"  # stale labels are dropped
+    assert inline_safe('a="</script><!--"') == 'a="<\\/script><\\!--"'
     print("selftest ok")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build the Kokpit page from your Claude setup.")
+    ap = argparse.ArgumentParser(description="Build the Claude Pit dashboard from your Claude setup.")
     ap.add_argument("--routines", metavar="FILE", help="RemoteTrigger `list` result to import")
     ap.add_argument("--selftest", action="store_true", help="run the built-in checks and exit")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     data = collect(args.routines)
-    page = build(data)
+    page, changed = build(data)
     counts = ", ".join("%d %s" % (len(data[k]), k) for k in
                        ("automations", "hooks", "plugins", "mcp", "skills", "agents", "commands"))
-    print("Built %s (%d KB): %s" % (page, page.stat().st_size // 1024, counts))
+    print("Built %s: %s; %d sessions in %d days" % (page, counts, data["activity"]["totals"]["window_sessions"],
+                                                   data["activity"]["window"]))
+    print("library.json changed" if changed else "library.json unchanged")
+    for a in data["automations"]:
+        if a["steps_source"] == "auto" and a.get("prompt"):
+            print("needs step labels: %s %s (prompt hash %s)" % (a["id"], a["name"], a["prompt_hash"]))
 
 
 if __name__ == "__main__":
