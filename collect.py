@@ -17,6 +17,7 @@ import collections
 import datetime as dt
 import hashlib
 import json
+import os
 import plistlib
 import re
 import subprocess
@@ -312,6 +313,113 @@ def project_name(cwd):
         return "Cowork scratch"
     p = Path(cwd)
     return "Home" if p == HOME else p.name
+
+
+# ---------------------------------------------------------------- live sessions
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def ms_iso(ms):
+    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).isoformat() if isinstance(ms, (int, float)) and ms else None
+
+
+APPS = {"claude-desktop": "Desktop app", "cli": "Terminal", "claude-vscode": "VS Code", "claude-jetbrains": "JetBrains"}
+
+
+def tool_label(name, args):
+    """Short, secret-free words for one tool call: file names, not contents; commands shortened."""
+    args = args if isinstance(args, dict) else {}
+    if name in ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit"):
+        return "%s %s" % (name, Path(str(args.get("file_path") or args.get("notebook_path") or "")).name)
+    if name == "Bash":  # the tool's own one-line description reads better than the raw command
+        return "Run: " + redact(args.get("description") or str(args.get("command") or "").split("\n")[0], 60)
+    if name in ("Grep", "Glob"):
+        return "Search " + clip(args.get("pattern"), 40)
+    if name == "WebFetch":
+        return "Fetch " + (urlparse(str(args.get("url") or "")).hostname or "page")
+    if name in ("Agent", "Task"):
+        return "Agent: " + clip(args.get("description"), 40)
+    if name == "Skill":
+        return "Skill " + clip(args.get("skill"), 40)
+    if name.startswith("mcp__"):
+        return "MCP " + name.split("__")[-1]
+    return name or "Tool"
+
+
+def tail_events(path, limit=8, size=262_144):
+    """Last tool calls, replies and prompts of one transcript, newest first, from its last 256 KB."""
+    try:
+        with open(path, "rb") as f:
+            end = f.seek(0, 2)
+            f.seek(max(0, end - size))
+            lines = f.read().decode("utf-8", "replace").splitlines()[1 if end > size else 0:]
+    except OSError:
+        return []
+    events = []
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else []
+        if o.get("type") == "assistant":
+            for b in blocks:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    events.append({"t": o.get("timestamp"), "kind": "tool", "label": tool_label(b.get("name") or "", b.get("input"))})
+                elif isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip():
+                    events.append({"t": o.get("timestamp"), "kind": "reply", "label": "Reply"})
+        elif o.get("type") == "user" and not o.get("toolUseResult") and not o.get("isMeta"):
+            # ponytail: a prompt is user text that is not a tool result or an injected <tag> block
+            text = content if isinstance(content, str) else " ".join(
+                str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+            if text.strip() and not text.lstrip().startswith("<") and not any(
+                    isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+                events.append({"t": o.get("timestamp"), "kind": "prompt", "label": "Your prompt"})
+    return events[-limit:][::-1]
+
+
+def live_sessions():
+    """Running Claude Code sessions (~/.claude/sessions) and recent desktop app sessions."""
+    meta = {}
+    for f in APP.glob("claude-code-sessions/*/*/local_*.json"):
+        m = load_json(f, {}) or {}
+        if m.get("cliSessionId"):
+            meta[m["cliSessionId"]] = m
+    running = []
+    for f in (CLAUDE / "sessions").glob("*.json"):
+        s = load_json(f, {}) or {}
+        if not s.get("sessionId") or not alive(s.get("pid")):
+            continue
+        m = meta.get(s["sessionId"], {})
+        transcript = next((CLAUDE / "projects").glob("*/%s.jsonl" % s["sessionId"]), None)
+        events = tail_events(transcript) if transcript else []
+        status = str(s.get("status") or "idle")
+        tool = next((e["label"] for e in events if e["kind"] == "tool"), "")
+        doing = (tool or "Thinking") if status == "busy" else (
+            "Waiting for you" if re.search("wait|input|permission", status) else "Idle")
+        running.append({"id": s["sessionId"], "title": s.get("name") or m.get("title") or "Untitled session",
+                        "project": project_name(s.get("cwd")), "app": APPS.get(s.get("entrypoint"), s.get("entrypoint") or ""),
+                        "status": status, "doing": doing, "status_since": ms_iso(s.get("statusUpdatedAt")),
+                        "started_at": ms_iso(s.get("startedAt")), "model": m.get("model") or "",
+                        "effort": m.get("effort") or "", "turns": m.get("completedTurns") or 0, "events": events})
+    running.sort(key=lambda r: (r["status"] != "busy", r["title"]))
+    live_ids = {r["id"] for r in running}
+    recent = sorted((m for m in meta.values() if not m.get("isArchived")), key=lambda m: -(m.get("lastActivityAt") or 0))
+    return {"at": NOW.isoformat(), "running": running,
+            "recent": [{"id": m.get("cliSessionId"), "title": m.get("title") or "Untitled session",
+                        "project": project_name(m.get("cwd")), "last_at": ms_iso(m.get("lastActivityAt")),
+                        "turns": m.get("completedTurns") or 0, "model": m.get("model") or "",
+                        "running": m.get("cliSessionId") in live_ids} for m in recent[:12]]}
 
 
 def activity(days=30):
@@ -652,7 +760,8 @@ def collect(routines_file=None):
     return {"version": 2, "generated_at": NOW.isoformat(), "routines_synced_at": synced,
             "timezone": local_tz(),
             "settings": {"model": settings.get("model") or "", "effort": settings.get("effortLevel") or ""},
-            "automations": autos, "plugins": plugins, **items, "health": report, "activity": activity()}
+            "automations": autos, "plugins": plugins, **items, "health": report, "activity": activity(),
+            "live": live_sessions(), "pit_dir": str(ROOT).replace(str(HOME), "~", 1)}
 
 
 SKELETON = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -740,6 +849,17 @@ def selftest():
     assert flow_steps(auto, saved)[:2] == ([{"label": "Search Gmail", "sub": "last 26 h"}], "claude")
     assert flow_steps(dict(auto, prompt="changed"), saved)[1] == "auto"  # stale labels are dropped
     assert inline_safe('a="</script><!--"') == 'a="<\\/script><\\!--"'
+    assert tool_label("Edit", {"file_path": str(HOME / "x" / "pages.jsx")}) == "Edit pages.jsx"
+    assert tool_label("Bash", {"command": "curl -H 'Bearer abcdefghijklmnopqrstuvwxyz0123456789'"}).endswith("•••'")
+    assert tool_label("mcp__abc__list_events", {}) == "MCP list_events"
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "t.jsonl"
+        rows = [{"type": "user", "timestamp": "1", "message": {"content": "fix the bug"}},
+                {"type": "assistant", "timestamp": "2", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/a/b.py"}}]}},
+                {"type": "user", "timestamp": "3", "toolUseResult": {}, "message": {"content": [{"type": "tool_result"}]}},
+                {"type": "assistant", "timestamp": "4", "message": {"content": [{"type": "text", "text": "Done."}]}}]
+        f.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+        assert [e["label"] for e in tail_events(f)] == ["Reply", "Read b.py", "Your prompt"], tail_events(f)
     print("selftest ok")
 
 
@@ -747,9 +867,12 @@ def main():
     ap = argparse.ArgumentParser(description="Build the Claude Pit dashboard from your Claude setup.")
     ap.add_argument("--routines", metavar="FILE", help="RemoteTrigger `list` result to import")
     ap.add_argument("--selftest", action="store_true", help="run the built-in checks and exit")
+    ap.add_argument("--live", action="store_true", help="print running sessions as JSON and exit (used by the desktop app)")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
+    if args.live:
+        return print(json.dumps(live_sessions(), ensure_ascii=False, separators=(",", ":")))
     data = collect(args.routines)
     page, changed = build(data)
     counts = ", ".join("%d %s" % (len(data[k]), k) for k in

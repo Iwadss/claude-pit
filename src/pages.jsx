@@ -47,6 +47,97 @@ function HealthList({ items }) {
   );
 }
 
+// ---------- Live sessions
+const sessionState = (s) => (s.status === "busy" ? ["ok", "Working"]
+  : /wait|input|permission/.test(s.status) ? ["warn", "Waiting for you"] : ["off", "Idle"]);
+
+function NowBanner({ live }) {
+  const running = (live && live.running) || [];
+  if (!running.length) return null;
+  const busy = running.filter((s) => s.status === "busy");
+  const top = busy[0] || running[0];
+  return (
+    <a className="now" href="#live">
+      <span className={`live-dot${busy.length ? "" : " idle"}`} aria-hidden="true" />
+      <b>{busy.length ? `${plural(busy.length, "session")} working` : `${plural(running.length, "session")} open`}</b>
+      <span className="now-what">{top.title} · {top.doing}</span>
+    </a>
+  );
+}
+
+function LiveBar({ ctl, live, now }) {
+  const msg = {
+    live: [<><span className="live-dot" aria-hidden="true" /> Live · updated {rel(live.at, now)}</>, null],
+    prompt: ["Watch sessions as they happen. Live updates need full access: the app runs collect.py --live every 5 seconds and only reads.", ["Turn on live updates", ctl.enable]],
+    denied: ["Live updates are turned off for this app.", ["Open permissions", ctl.manage]],
+    install: ["Live updates run in the Claude Pit desktop app. This page shows the last snapshot.", ["Install as app", ctl.install]],
+    error: [`Live update failed: ${ctl.error}`, ["Try again", ctl.enable]],
+    snapshot: ["Live updates run in the Claude Pit desktop app. This page shows the last snapshot.", null],
+  }[ctl.mode] || [null, null];
+  return (
+    <div className={`livebar ${ctl.mode}`}>
+      <span>{msg[0]}</span>
+      {msg[1] && <button type="button" className="btn" onClick={msg[1][1]}>{msg[1][0]}</button>}
+    </div>
+  );
+}
+
+function SessionCard({ s, now }) {
+  const [tone, word] = sessionState(s);
+  const kv = [["Project", s.project], ["Model", [model(s.model), s.effort && `${s.effort} effort`].filter(Boolean).join(" · ")],
+    ["Started", s.started_at && `${fmt(s.started_at, T.full)} · ${rel(s.started_at, now)}`], ["Turns", s.turns || ""]];
+  return (
+    <article className="card">
+      <div className="auto-h"><h2>{s.title}</h2><Pill tone={tone}>{word}</Pill>{s.app && <Tag>{s.app}</Tag>}</div>
+      <div className="auto-body">
+        <div className="session-now">
+          <div className={`fnode doing ${tone === "ok" ? "focal" : "input"}`}>
+            <span className="ftag">{tone === "ok" ? "Now" : "State"}</span>
+            <b className="mono">{s.doing}</b>
+            {s.status_since && <small>{word} for {rel(s.status_since, now).replace(" ago", "")}</small>}
+          </div>
+          {s.events.length > 0 && (
+            <ol className="timeline">
+              {s.events.map((e, i) => (
+                <li key={i} className={e.kind}><time>{fmt(e.t, T.time)}</time><span>{e.label}</span></li>
+              ))}
+            </ol>
+          )}
+        </div>
+        <dl className="kv">{kv.filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{v}</dd></React.Fragment>)}</dl>
+      </div>
+    </article>
+  );
+}
+
+export function Live({ data, now, ctl }) {
+  const live = data.live || { at: data.generated_at, running: [], recent: [] };
+  const busy = live.running.filter((s) => s.status === "busy").length;
+  return (
+    <>
+      <PageHead title="Live" sub={live.running.length ? `${plural(live.running.length, "session")} open · ${busy} working` : "No session open"} />
+      <LiveBar ctl={ctl} live={live} now={now} />
+      {live.running.length ? live.running.map((s) => <SessionCard key={s.id} s={s} now={now} />)
+        : <Empty>No Claude Code session is running right now.</Empty>}
+      <Card title="Recent sessions" meta="Claude desktop app">
+        {live.recent.length ? (
+          <div className="rows">
+            {live.recent.map((r) => (
+              <div className="row" key={r.id} style={{ gridTemplateColumns: "minmax(0,1fr) auto" }}>
+                <div>
+                  <span className="nm sans">{r.title}</span>
+                  <div className="sub">{[r.project, model(r.model), r.turns && plural(r.turns, "turn")].filter(Boolean).join(" · ")}</div>
+                </div>
+                {r.running ? <Pill tone="ok">Open</Pill> : <span className="soft small mono">{rel(r.last_at, now)}</span>}
+              </div>
+            ))}
+          </div>
+        ) : <Empty>No sessions yet.</Empty>}
+      </Card>
+    </>
+  );
+}
+
 // ---------- Monitor
 export function Overview({ data, now }) {
   const next = upcomingRuns(data.automations, 60, now)[0];
@@ -56,6 +147,7 @@ export function Overview({ data, now }) {
   return (
     <>
       <PageHead title="Overview" sub={`Snapshot ${fmt(data.generated_at, T.full)} · ${rel(data.generated_at, now)}`} />
+      <NowBanner live={data.live} />
       <div className="stats">
         <Stat href="#automations" label="Automations" value={data.automations.length} sub={`${data.automations.filter((a) => a.enabled).length} active`} />
         <Stat href="#skills" label="Skills" value={data.skills.length} sub={`Code ${by(data.skills, "code")} · Chat ${by(data.skills, "chat")}`} />

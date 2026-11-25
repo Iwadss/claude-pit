@@ -8,7 +8,8 @@ It opens as a private Claude artifact on your Mac and your phone, or as one HTML
 
 | Page | What it shows |
 | --- | --- |
-| **Overview** | Counts, next run with a live countdown, sessions over 14 days, skills and MCP mix, health summary |
+| **Overview** | Counts, sessions working right now, next run with a live countdown, sessions over 14 days, skills and MCP mix, health summary |
+| **Live** | Claude Code sessions open right now: working or waiting, what each is doing (tool and file), a timeline of its last steps, and recent sessions. Updates every 5 seconds in the desktop app |
 | **Automations** | Each automation as a flow diagram (when → where it runs → steps → result), schedule, next run, run history, model, permissions, connectors, full prompt |
 | **Schedule** | A 7-day strip and every upcoming run as a row of boxes: time → automation → what it does → result |
 | **Activity** | Sessions and output tokens per day, tokens by model, top projects, most used skills (from local Claude Code transcripts) |
@@ -20,6 +21,10 @@ It opens as a private Claude artifact on your Mac and your phone, or as one HTML
 | **Health** | Failed or paused schedules, connectors waiting for sign-in, hooks that run on every prompt, duplicate skills, stale data |
 
 Also: left sidebar navigation, phone layout with a drawer, light and dark themes, *Install as app* inside the Claude desktop app, and a refresh task that keeps it current.
+
+### Live mode
+
+In a browser or on your phone the Live page shows the last snapshot. Installed as an app from the Claude desktop app, it can follow sessions as they happen: press **Turn on live updates** and allow *full access*. The app then runs `python3 collect.py --live` every 5 seconds (read only, fixed arguments, no shell) and redraws. The desktop app asks again after each new published version, which a refresh creates.
 
 ## Stack
 
@@ -80,7 +85,8 @@ python3 collect.py # writes out/
 | `~/.claude/plugins/…` | Claude Code plugins and their skills, commands, agents, hooks, MCP servers; claude.ai plugins synced to your computer |
 | `~/.claude/skills`, `agents`, `commands` | your own skills, agents, slash commands (plus synced Anthropic skills) |
 | `~/.claude.json` | MCP servers, connectors seen by Claude Code, project folders, skill use counts |
-| `~/.claude/projects/*/*.jsonl` | activity: sessions, replies and tokens per day, models, projects |
+| `~/.claude/projects/*/*.jsonl` | activity: sessions, replies and tokens per day, models, projects; the last steps of open sessions |
+| `~/.claude/sessions/*.json`, `~/Library/Application Support/Claude/claude-code-sessions` | sessions open right now and their state; recent desktop app sessions |
 | `<project>/.claude/…`, `<project>/.mcp.json` | project skills, agents, commands, hooks, MCP servers |
 | `~/.claude/mcp-needs-auth-cache.json` | servers waiting for sign-in |
 | `~/Library/Application Support/Claude/…` | desktop app extensions (enabled flag only) |
@@ -90,7 +96,7 @@ python3 collect.py # writes out/
 ## Privacy and security
 
 - Never copied: env vars, headers, tokens, MCP commands and arguments, URL paths. Hook commands are shortened, the home folder becomes `~`, and anything shaped like a key is blanked.
-- Activity keeps only counts and project folder names, never message text.
+- Activity keeps only counts and project folder names. Live keeps session titles, tool names, file names and each command's one-line description. Neither keeps message text.
 - `cache/` and `out/` hold your data and are in `.gitignore`. Do not commit them.
 - Routine prompts are shown in full. Artifacts are private by default; share the page only with people who may read your prompts.
 - The collector only reads your Claude config. It never changes it.
@@ -103,7 +109,7 @@ Features people have built into Claude Code dashboards and monitors, and where C
 | --- | --- | --- |
 | Token usage per day, model, project | ccusage, Claude Code Usage Monitor, claude-code-templates | Yes (tokens, not cost) |
 | Cost in dollars, monthly budget alert | ccusage, Usage Monitor | Not yet |
-| Live view of running sessions and tool calls | claude-code-templates, hooks observability dashboards | Not yet |
+| Live view of running sessions and tool calls | claude-code-templates, hooks observability dashboards | Yes (live in the desktop app) |
 | Hook event stream (every PreToolUse/PostToolUse) | multi-agent observability dashboards | Not yet; hooks are listed |
 | Session history browser and search | Claudia/opcode, Claude Code UI | Not yet |
 | Agents, commands, MCP browser | claude-code-templates, Claudia | Yes |
@@ -124,6 +130,7 @@ Features people have built into Claude Code dashboards and monitors, and where C
 
 ```bash
 python3 collect.py --selftest
+python3 collect.py --live    # what the desktop app polls
 ```
 
 ## License

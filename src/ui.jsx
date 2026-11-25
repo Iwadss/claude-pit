@@ -4,6 +4,7 @@ const { useState, useEffect } = React;
 
 export const PAGES = [
   { id: "overview", label: "Overview", icon: "grid", group: "Monitor" },
+  { id: "live", label: "Live", icon: "radio", group: "Monitor" },
   { id: "automations", label: "Automations", icon: "flow", group: "Monitor", count: (d) => d.automations.length },
   { id: "schedule", label: "Schedule", icon: "calendar", group: "Monitor" },
   { id: "activity", label: "Activity", icon: "pulse", group: "Monitor" },
@@ -89,6 +90,7 @@ const PATHS = {
   flow: <><rect x="3" y="3" width="8" height="6" rx="1.5" /><rect x="13" y="15" width="8" height="6" rx="1.5" /><path d="M7 9v5a4 4 0 0 0 4 4h2" /></>,
   calendar: <><rect x="3.5" y="5" width="17" height="15.5" rx="2" /><path d="M3.5 10h17M8 3v4M16 3v4" /></>,
   pulse: <path d="M3 12h4l3-7 4 14 3-7h4" />,
+  radio: <><circle cx="12" cy="12" r="2.2" /><path d="M8.3 8.3a5.2 5.2 0 0 0 0 7.4M15.7 8.3a5.2 5.2 0 0 1 0 7.4M5.5 5.5a9.2 9.2 0 0 0 0 13M18.5 5.5a9.2 9.2 0 0 1 0 13" /></>,
   spark: <path d="M12 3.5l2 6.5 6.5 2-6.5 2-2 6.5-2-6.5-6.5-2 6.5-2z" />,
   box: <><path d="M20.5 7.5L12 3 3.5 7.5 12 12z" /><path d="M3.5 7.5v9L12 21l8.5-4.5v-9M12 12v9" /></>,
   plug: <><path d="M9 3v5M15 3v5" /><path d="M6 8h12v3a6 6 0 0 1-12 0z" /><path d="M12 17v4" /></>,
