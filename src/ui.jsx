@@ -1,5 +1,7 @@
 // Shared helpers and building blocks: icons, cards, pills, charts and the flow diagrams.
 // React comes from the CDN as a global, so there is no import of it here.
+import { LOGO_PATH, LOGO_VIEWBOX } from "./logo.js";
+export { LOGO_PATH, LOGO_VIEWBOX };
 const { useState, useEffect } = React;
 
 export const PAGES = [
@@ -119,11 +121,11 @@ export function Icon({ name, size = 16 }) {
   );
 }
 export function Logo() {
+  const [x, y, w, h] = LOGO_VIEWBOX;
   return (
-    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-      <rect width="28" height="28" rx="6" style={{ fill: "var(--ink)" }} />
-      <circle cx="14" cy="14" r="6.5" fill="none" style={{ stroke: "var(--paper)" }} strokeWidth="2" />
-      <circle cx="14" cy="14" r="2.4" style={{ fill: "var(--accent)" }} />
+    <svg width="30" height="30" viewBox={`${x - 24} ${y - 24} ${w + 48} ${h + 48}`} aria-hidden="true">
+      <rect x={x - 24} y={y - 24} width={w + 48} height={h + 48} rx="96" style={{ fill: "var(--ink)" }} />
+      <path d={LOGO_PATH} fillRule="evenodd" style={{ fill: "var(--accent)" }} />
     </svg>
   );
 }

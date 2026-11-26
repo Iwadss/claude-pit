@@ -2,7 +2,7 @@
 // desktop app it also polls `collect.py --live`, reads memory files, searches transcripts, saves the
 // budget, keeps a menu bar item and sends notifications.
 import "./styles.css";
-import { PAGES, GROUPS, Icon, Logo, useNow, rel, fmt, T, usd, plural, issues, needsLook, upcomingRuns } from "./ui.jsx";
+import { PAGES, GROUPS, Icon, Logo, LOGO_PATH, LOGO_VIEWBOX, useNow, rel, fmt, T, usd, plural, issues, needsLook, upcomingRuns } from "./ui.jsx";
 import * as P from "./pages.jsx";
 
 const { useState, useEffect, useRef } = React;
@@ -39,15 +39,18 @@ function canvasIcon(size, draw) {
   draw(c.getContext("2d"));
   return c.toDataURL("image/png");
 }
+// Draws the logo path scaled into a size x size square with `pad` pixels of margin.
+function drawMark(g, size, pad, color) {
+  const [x, y, w, h] = LOGO_VIEWBOX, s = (size - 2 * pad) / Math.max(w, h);
+  g.save(); g.translate(pad - x * s, pad - y * s); g.scale(s, s);
+  g.fillStyle = color; g.fill(new Path2D(LOGO_PATH), "evenodd"); g.restore();
+}
 const dockIcon = () => canvasIcon(256, (g) => {
   g.fillStyle = "#2d3142"; g.beginPath(); g.roundRect(0, 0, 256, 256, 56); g.fill();
-  g.strokeStyle = "#f5f5f5"; g.lineWidth = 18; g.beginPath(); g.arc(128, 128, 60, 0, 2 * Math.PI); g.stroke();
-  g.fillStyle = "#bf4520"; g.beginPath(); g.arc(128, 128, 22, 0, 2 * Math.PI); g.fill();
+  drawMark(g, 256, 36, "#f08a59");
 });
-const trayIcon = () => canvasIcon(36, (g) => { // template image: black on transparent, macOS recolours it
-  g.strokeStyle = "#000"; g.lineWidth = 3.5; g.beginPath(); g.arc(18, 18, 12, 0, 2 * Math.PI); g.stroke();
-  g.fillStyle = "#000"; g.beginPath(); g.arc(18, 18, 5, 0, 2 * Math.PI); g.fill();
-});
+// template image: black on transparent, macOS recolours it
+const trayIcon = () => canvasIcon(36, (g) => drawMark(g, 36, 1, "#000"));
 
 // Runs python3 with fixed arguments (no shell) and resolves its stdout.
 function spawnOnce(desktop, py, args) {
