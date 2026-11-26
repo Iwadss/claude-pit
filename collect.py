@@ -354,47 +354,116 @@ def tool_label(name, args):
     return name or "Tool"
 
 
+# API list prices in USD per million tokens: (input, output, cache read). Cache writes cost 1.25x input
+# (5-minute) or 2x input (1-hour). Source: Anthropic pricing as listed in Nov 2026.
+# ponytail: a static table; update it when prices change. Unknown models count as "unpriced".
+PRICES = {
+    "claude-fable-5-2": (8, 40, 0.20), "claude-mythos-5-2": (8, 40, 0.20),
+    "claude-fable-5-1": (10, 50, 0.25), "claude-mythos-5-1": (10, 50, 0.25),
+    "claude-fable-5": (10, 50, 1.00), "claude-mythos-5": (10, 50, 1.00),
+    "claude-opus-5-5": (4, 20, 0.20), "claude-opus-5": (5, 25, 0.50),
+    "claude-opus-4-8": (5, 25, 0.50), "claude-opus-4-7": (5, 25, 0.50), "claude-opus-4-6": (5, 25, 0.50),
+    "claude-sonnet-5-5": (2, 10, 0.10), "claude-sonnet-5": (2, 10, 0.20), "claude-sonnet-4-6": (3, 15, 0.30),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-haiku-4-5": (1, 5, 0.10),
+}
+SMALL_WINDOW = ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-opus-4-1", "claude-opus-4-0",
+                "claude-sonnet-4-0", "claude-3")
+
+
+def message_cost(model, u):
+    """API-equivalent USD for one reply, or None when the model has no known price."""
+    key = next((k for k in sorted(PRICES, key=len, reverse=True) if (model or "").startswith(k)), None)
+    if not key or not isinstance(u, dict):
+        return None
+    inp, out, read = PRICES[key]
+    cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+    hour = cc.get("ephemeral_1h_input_tokens") or 0
+    five = max((u.get("cache_creation_input_tokens") or 0) - hour, 0)
+    usd = ((u.get("input_tokens") or 0) * inp + five * inp * 1.25 + hour * inp * 2
+           + (u.get("cache_read_input_tokens") or 0) * read + (u.get("output_tokens") or 0) * out) / 1e6
+    return usd * (2 if u.get("speed") == "fast" else 1)  # fast mode is twice the price where offered
+
+
+def context_window(model):
+    return 200_000 if (model or "").startswith(SMALL_WINDOW) else 1_000_000
+
+
+def iso(t):
+    return t.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def prompt_text(o, blocks):
+    """The text of a real user prompt, or '' for tool results and injected <tag> blocks."""
+    if o.get("toolUseResult") or o.get("isMeta") or any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+        return ""
+    content = (o.get("message") or {}).get("content")
+    text = content if isinstance(content, str) else " ".join(
+        str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+    return "" if text.lstrip().startswith("<") else text.strip()
+
+
 def tail_events(path, limit=8, size=262_144):
-    """Last tool calls, replies and prompts of one transcript, newest first, from its last 256 KB."""
+    """Last steps of one transcript (newest first) from its last 256 KB, plus the context size and model."""
     try:
         with open(path, "rb") as f:
             end = f.seek(0, 2)
             f.seek(max(0, end - size))
             lines = f.read().decode("utf-8", "replace").splitlines()[1 if end > size else 0:]
     except OSError:
-        return []
-    events = []
+        return [], 0, ""
+    events, ctx, model = [], 0, ""
     for line in lines:
         try:
             o = json.loads(line)
         except ValueError:
             continue
         msg = o.get("message") if isinstance(o.get("message"), dict) else {}
-        content = msg.get("content")
-        blocks = content if isinstance(content, list) else []
+        blocks = msg.get("content") if isinstance(msg.get("content"), list) else []
         if o.get("type") == "assistant":
+            u = msg.get("usage") or {}
+            if u and msg.get("model") != "<synthetic>":
+                ctx = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+                model = msg.get("model") or model
             for b in blocks:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     events.append({"t": o.get("timestamp"), "kind": "tool", "label": tool_label(b.get("name") or "", b.get("input"))})
                 elif isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip():
                     events.append({"t": o.get("timestamp"), "kind": "reply", "label": "Reply"})
-        elif o.get("type") == "user" and not o.get("toolUseResult") and not o.get("isMeta"):
-            # ponytail: a prompt is user text that is not a tool result or an injected <tag> block
-            text = content if isinstance(content, str) else " ".join(
-                str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
-            if text.strip() and not text.lstrip().startswith("<") and not any(
-                    isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
-                events.append({"t": o.get("timestamp"), "kind": "prompt", "label": "Your prompt"})
-    return events[-limit:][::-1]
+        elif o.get("type") == "user" and prompt_text(o, blocks):
+            events.append({"t": o.get("timestamp"), "kind": "prompt", "label": "Your prompt"})
+    return events[-limit:][::-1], ctx, model
 
 
-def live_sessions():
-    """Running Claude Code sessions (~/.claude/sessions) and recent desktop app sessions."""
+def app_sessions():
+    """Claude desktop app session records (title, model, turns, last activity), by Claude Code session id."""
     meta = {}
     for f in APP.glob("claude-code-sessions/*/*/local_*.json"):
         m = load_json(f, {}) or {}
         if m.get("cliSessionId"):
             meta[m["cliSessionId"]] = m
+    return meta
+
+
+def plan_usage():
+    """Plan limits: the newer of what /claude-pit saved from the app and the app's own last sample."""
+    saved = load_json(CACHE / "plan_usage.json", {}) or {}
+    rows = []
+    if saved.get("windows"):
+        rows.append({"plan": saved.get("plan") or "", "at": saved.get("at"), "source": "app",
+                     "windows": [{"label": w.get("label"), "percent": w.get("percentUsed"), "resets_at": w.get("resetsAt")}
+                                 for w in saved["windows"]]})
+    samples = (load_json(APP / "plan-usage-history.json", {}) or {}).get("samples") or []
+    if samples and isinstance(samples[-1], dict):
+        u = samples[-1].get("u") or {}
+        rows.append({"plan": saved.get("plan") or "", "at": ms_iso(samples[-1].get("t")), "source": "history",
+                     "windows": [{"label": "5-hour limit", "percent": u.get("fh"), "resets_at": None},
+                                 {"label": "Weekly · all models", "percent": u.get("sd"), "resets_at": None}]})
+    return max(rows, key=lambda r: r["at"] or "") if rows else None
+
+
+def live_sessions(meta=None):
+    """Running Claude Code sessions (~/.claude/sessions), recent desktop app sessions and plan limits."""
+    meta = app_sessions() if meta is None else meta
     running = []
     for f in (CLAUDE / "sessions").glob("*.json"):
         s = load_json(f, {}) or {}
@@ -402,7 +471,8 @@ def live_sessions():
             continue
         m = meta.get(s["sessionId"], {})
         transcript = next((CLAUDE / "projects").glob("*/%s.jsonl" % s["sessionId"]), None)
-        events = tail_events(transcript) if transcript else []
+        events, ctx, model = tail_events(transcript) if transcript else ([], 0, "")
+        model = model or m.get("model") or ""
         status = str(s.get("status") or "idle")
         tool = next((e["label"] for e in events if e["kind"] == "tool"), "")
         doing = (tool or "Thinking") if status == "busy" else (
@@ -410,27 +480,33 @@ def live_sessions():
         running.append({"id": s["sessionId"], "title": s.get("name") or m.get("title") or "Untitled session",
                         "project": project_name(s.get("cwd")), "app": APPS.get(s.get("entrypoint"), s.get("entrypoint") or ""),
                         "status": status, "doing": doing, "status_since": ms_iso(s.get("statusUpdatedAt")),
-                        "started_at": ms_iso(s.get("startedAt")), "model": m.get("model") or "",
-                        "effort": m.get("effort") or "", "turns": m.get("completedTurns") or 0, "events": events})
+                        "started_at": ms_iso(s.get("startedAt")), "model": model, "effort": m.get("effort") or "",
+                        "turns": m.get("completedTurns") or 0, "events": events,
+                        "context": {"tokens": ctx, "window": context_window(model)} if ctx else None})
     running.sort(key=lambda r: (r["status"] != "busy", r["title"]))
     live_ids = {r["id"] for r in running}
     recent = sorted((m for m in meta.values() if not m.get("isArchived")), key=lambda m: -(m.get("lastActivityAt") or 0))
-    return {"at": NOW.isoformat(), "running": running,
+    return {"at": NOW.isoformat(), "running": running, "limits": plan_usage(),
             "recent": [{"id": m.get("cliSessionId"), "title": m.get("title") or "Untitled session",
                         "project": project_name(m.get("cwd")), "last_at": ms_iso(m.get("lastActivityAt")),
                         "turns": m.get("completedTurns") or 0, "model": m.get("model") or "",
                         "running": m.get("cliSessionId") in live_ids} for m in recent[:12]]}
 
 
-def activity(days=30):
-    """Sessions, replies and tokens per day from Claude Code transcripts (~/.claude/projects)."""
+def transcripts(meta, days=30, event_days=7, max_events=150):
+    """One pass over the Claude Code transcripts: usage and API-equivalent cost per day and model,
+    totals per session, the latest events (tool calls, prompts, replies, tool errors) and tool counts."""
     zone = ZoneInfo(local_tz())
     today = NOW.astimezone(zone).date()
     start = today - dt.timedelta(days=days - 1)
-    per_day = {start + dt.timedelta(days=i): {"sessions": set(), "messages": 0, "output_tokens": 0, "input_tokens": 0}
-               for i in range(days)}
-    models, apps, projects, seen = collections.Counter(), {}, {}, set()
-    total_sessions, window_sessions, total_messages, first = set(), set(), 0, None
+    since = NOW - dt.timedelta(days=event_days)
+    month = today.strftime("%Y-%m")
+    per_day = {start + dt.timedelta(days=i): {"sessions": set(), "messages": 0, "output_tokens": 0,
+                                              "input_tokens": 0, "cost": 0.0} for i in range(days)}
+    models, projects, apps, titles, sessions = {}, {}, {}, {}, {}
+    tools, seen, events = collections.Counter(), set(), []
+    errors = unpriced = 0
+    month_cost, window_sessions, first = 0.0, set(), None
     for f in (CLAUDE / "projects").glob("*/*.jsonl"):
         try:
             fh = open(f, encoding="utf-8", errors="replace")
@@ -438,53 +514,190 @@ def activity(days=30):
             continue
         with fh:
             for line in fh:
-                if "assistant" not in line:  # cheap prefilter; most lines are other kinds
-                    continue
+                if '"assistant"' not in line and '"user"' not in line and '"custom-title"' not in line:
+                    continue  # cheap prefilter: most lines are bookkeeping
                 try:
                     o = json.loads(line)
-                    t = dt.datetime.fromisoformat(o["timestamp"].replace("Z", "+00:00")).astimezone(zone)
-                except (ValueError, KeyError, AttributeError, TypeError):
+                except ValueError:
+                    continue
+                kind, sid = o.get("type"), o.get("sessionId") or ""
+                if kind == "custom-title":
+                    titles[sid] = o.get("customTitle") or titles.get(sid)
+                    continue
+                if kind not in ("assistant", "user"):
+                    continue
+                try:
+                    t = dt.datetime.fromisoformat(str(o["timestamp"]).replace("Z", "+00:00"))
+                except (KeyError, ValueError):
                     continue
                 m = o.get("message") if isinstance(o.get("message"), dict) else {}
+                if m.get("model") == "<synthetic>":
+                    continue
+                blocks = m.get("content") if isinstance(m.get("content"), list) else []
+                s = sessions.setdefault(sid, {"id": sid, "project": project_name(o.get("cwd")), "first": t, "last": t,
+                                              "app": APPS.get(o.get("entrypoint"), o.get("entrypoint") or ""),
+                                              "replies": 0, "prompts": 0, "tools": 0, "output_tokens": 0, "cost": 0.0,
+                                              "models": collections.Counter()})
+                s["first"], s["last"] = min(s["first"], t), max(s["last"], t)
+                local = t.astimezone(zone)
+                day, recent = per_day.get(local.date()), t >= since
+                if kind == "user":
+                    failed = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error")]
+                    if failed:
+                        errors += len(failed) if day is not None else 0
+                        if recent:
+                            events.append({"t": iso(t), "kind": "error", "label": "Tool error", "sid": sid})
+                    elif prompt_text(o, blocks):
+                        s["prompts"] += 1
+                        if recent:
+                            events.append({"t": iso(t), "kind": "prompt", "label": "Your prompt", "sid": sid})
+                    continue
+                for b in blocks:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        s["tools"] += 1
+                        if day is not None:  # MCP tools show by tool name; their server ids are opaque
+                            name = b.get("name") or "?"
+                            tools["MCP " + name.split("__")[-1] if name.startswith("mcp__") else name] += 1
+                        if recent:
+                            events.append({"t": iso(t), "kind": "tool", "sid": sid,
+                                           "label": tool_label(b.get("name") or "", b.get("input"))})
+                    elif isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip() and recent:
+                        events.append({"t": iso(t), "kind": "reply", "label": "Reply", "sid": sid})
                 key = m.get("id") or o.get("uuid")
-                if o.get("type") != "assistant" or key in seen or m.get("model") == "<synthetic>":
+                if key in seen:  # one reply can span several lines; count its usage once
                     continue
                 seen.add(key)
-                sid = o.get("sessionId") or ""
-                total_sessions.add(sid)
-                total_messages += 1
-                first = min(first, t.date()) if first else t.date()
-                day = per_day.get(t.date())
+                u = m.get("usage") or {}
+                usd, out = message_cost(m.get("model"), u), u.get("output_tokens") or 0
+                s["replies"] += 1
+                s["output_tokens"] += out
+                s["cost"] += usd or 0
+                s["models"][m.get("model") or "unknown"] += 1
+                unpriced += out if usd is None else 0
+                first = min(first, local.date()) if first else local.date()
+                month_cost += (usd or 0) if local.strftime("%Y-%m") == month else 0
                 if day is None:
                     continue
                 window_sessions.add(sid)
-                u = m.get("usage") or {}
-                out = u.get("output_tokens") or 0
                 day["sessions"].add(sid)
                 day["messages"] += 1
                 day["output_tokens"] += out
                 day["input_tokens"] += sum(u.get(k) or 0 for k in
                                            ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-                models[m.get("model") or "unknown"] += out
+                day["cost"] += usd or 0
+                mm = models.setdefault(m.get("model") or "unknown", {"name": m.get("model") or "unknown", "output_tokens": 0, "cost": 0.0})
+                mm["output_tokens"] += out
+                mm["cost"] += usd or 0
                 apps.setdefault(o.get("entrypoint") or "cli", set()).add(sid)
-                p = projects.setdefault(project_name(o.get("cwd")), {"sessions": set(), "last": ""})
+                p = projects.setdefault(s["project"], {"sessions": set(), "last": ""})
                 p["sessions"].add(sid)
-                p["last"] = max(p["last"], t.isoformat())
+                p["last"] = max(p["last"], local.isoformat())
+
+    def title(sid):
+        return titles.get(sid) or (meta.get(sid) or {}).get("title") or "Untitled session"
+
     usage = (load_json(HOME / ".claude.json", {}) or {}).get("skillUsage") or {}
-    skills_used = sorted(({"name": k, "count": v.get("usageCount", 0),
-                           "last": dt.datetime.fromtimestamp(v.get("lastUsedAt", 0) / 1000, dt.timezone.utc).isoformat()}
+    skills_used = sorted(({"name": k, "count": v.get("usageCount", 0), "last": ms_iso(v.get("lastUsedAt"))}
                           for k, v in usage.items() if isinstance(v, dict)), key=lambda s: -s["count"])
-    rows = [{"date": d.isoformat(), "sessions": len(v["sessions"]), "messages": v["messages"],
-             "output_tokens": v["output_tokens"], "input_tokens": v["input_tokens"]} for d, v in sorted(per_day.items())]
-    return {"days": rows, "window": days,
-            "totals": {"sessions": len(total_sessions), "window_sessions": len(window_sessions), "messages": total_messages,
-                       "first_day": first.isoformat() if first else None,
-                       "active_days": sum(1 for r in rows if r["messages"])},
-            "models": [{"name": k, "output_tokens": v} for k, v in models.most_common()],
-            "apps": sorted(({"name": k, "sessions": len(v)} for k, v in apps.items()), key=lambda a: -a["sessions"]),
-            "projects": sorted(({"name": k, "sessions": len(v["sessions"]), "last": v["last"]} for k, v in projects.items()),
-                               key=lambda p: -p["sessions"])[:8],
-            "skills_used": skills_used[:10]}
+    rows = [{"date": d.isoformat(), "sessions": len(v["sessions"]), "messages": v["messages"], "output_tokens": v["output_tokens"],
+             "input_tokens": v["input_tokens"], "cost": round(v["cost"], 4)} for d, v in sorted(per_day.items())]
+    activity = {
+        "days": rows, "window": days,
+        "totals": {"sessions": len(sessions), "window_sessions": len(window_sessions), "messages": len(seen),
+                   "first_day": first.isoformat() if first else None, "active_days": sum(1 for r in rows if r["messages"])},
+        "models": sorted(({"name": v["name"], "output_tokens": v["output_tokens"], "cost": round(v["cost"], 4)}
+                          for v in models.values()), key=lambda m: -m["cost"]),
+        "apps": sorted(({"name": APPS.get(k, k), "sessions": len(v)} for k, v in apps.items()), key=lambda a: -a["sessions"]),
+        "projects": sorted(({"name": k, "sessions": len(v["sessions"]), "last": v["last"]} for k, v in projects.items()),
+                           key=lambda p: -p["sessions"])[:8],
+        "skills_used": skills_used[:10],
+        "tools": [{"name": k, "count": v} for k, v in tools.most_common(12)], "tool_errors": errors,
+    }
+    cost = {"currency": "USD", "today": round(per_day[today]["cost"], 4), "month": round(month_cost, 4),
+            "window": round(sum(r["cost"] for r in rows), 4), "unpriced_tokens": unpriced}
+    history = [{"id": sid, "title": title(sid), "project": s["project"], "app": s["app"],
+                "model": s["models"].most_common(1)[0][0] if s["models"] else "", "started": iso(s["first"]),
+                "last": iso(s["last"]), "replies": s["replies"], "prompts": s["prompts"], "tools": s["tools"],
+                "output_tokens": s["output_tokens"], "cost": round(s["cost"], 4)}
+               for sid, s in sessions.items() if s["replies"]]
+    history.sort(key=lambda h: h["last"], reverse=True)
+    events.sort(key=lambda e: e["t"], reverse=True)
+    activity["event_counts"] = dict(collections.Counter(e["kind"] for e in events))  # all of the last 7 days
+    for e in events[:max_events]:
+        e["session"], e["project"] = title(e["sid"]), sessions[e["sid"]]["project"]
+    return activity, cost, history[:300], events[:max_events]
+
+
+def search_transcripts(query, limit=30):
+    """Sessions whose prompts or replies contain `query` (case-insensitive), with short snippets. Local only."""
+    q = query.strip().lower()
+    if len(q) < 2:
+        return []
+    meta, hits = app_sessions(), {}
+    for f in (CLAUDE / "projects").glob("*/*.jsonl"):
+        try:
+            fh = open(f, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if q not in line.lower():
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                m = o.get("message") if isinstance(o.get("message"), dict) else {}
+                blocks = m.get("content") if isinstance(m.get("content"), list) else []
+                if o.get("type") == "user":
+                    text, who = prompt_text(o, blocks), "you"
+                elif o.get("type") == "assistant":
+                    text, who = " ".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"), "claude"
+                else:
+                    continue
+                i = text.lower().find(q)
+                if i < 0:
+                    continue
+                sid = o.get("sessionId") or f.stem
+                h = hits.setdefault(sid, {"id": sid, "title": (meta.get(sid) or {}).get("title") or "Untitled session",
+                                          "project": project_name(o.get("cwd")), "last": o.get("timestamp"), "matches": 0, "snippets": []})
+                h["matches"] += 1
+                h["last"] = max(h["last"] or "", o.get("timestamp") or "")
+                if len(h["snippets"]) < 3:
+                    h["snippets"].append({"who": who, "t": o.get("timestamp"),
+                                          "text": redact(text[max(0, i - 70): i + len(q) + 90], 200)})
+    return sorted(hits.values(), key=lambda h: (-h["matches"], h["last"] or ""))[:limit]
+
+
+def memory_files(cfg):
+    """CLAUDE.md files and auto-memory notes: path, scope and a one-line description (no content)."""
+    names = {re.sub(r"[^A-Za-z0-9]", "-", p): project_name(p) for p in (cfg.get("projects") or {})}
+    rows = []
+
+    def add(path, scope, project):
+        p = Path(path)
+        if not p.is_file():
+            return
+        meta, st = frontmatter(p), p.stat()
+        desc = meta.get("description")
+        if not desc:
+            lines = [ln.strip() for ln in p.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+            desc = ("Index of %d notes" % sum(1 for ln in lines if ln.startswith("- ["))) if p.name == "MEMORY.md" \
+                else next((ln.lstrip("# ") for ln in lines if not ln.startswith("---")), "")
+        rows.append({"path": str(p).replace(str(HOME), "~", 1), "name": p.name, "scope": scope, "project": project,
+                     "description": clip(desc, 160), "size": st.st_size, "updated": ms_iso(st.st_mtime * 1000)})
+
+    add(CLAUDE / "CLAUDE.md", "user", "All projects")
+    for proj in cfg.get("projects") or {}:
+        p = Path(proj)
+        if p.is_dir() and p != HOME:
+            for rel in ("CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
+                add(p / rel, "project", p.name)
+    for d in sorted((CLAUDE / "projects").glob("*/memory")):
+        for f in sorted(d.glob("*.md"), key=lambda x: (x.name != "MEMORY.md", x.name)):
+            add(f, "memory", names.get(d.parent.name) or (
+                "Cowork scratch" if "scratch-workspaces" in d.parent.name else d.parent.name.split("-")[-1]))
+    return rows
 
 
 def desktop_auto(t):
@@ -665,6 +878,50 @@ def health(autos, plugins, items):
     return sorted(out, key=lambda x: order[x["level"]])
 
 
+def usage_health(cost, budget, limits, live, activity):
+    """Budget, plan limits, full context windows and tool errors."""
+    out = []
+    if budget:
+        share = cost["month"] / budget
+        if share >= 1:
+            out.append({"level": "warning", "title": "Over this month's budget",
+                        "detail": "$%.2f of $%.2f (API-equivalent)." % (cost["month"], budget)})
+        elif share >= 0.8:
+            out.append({"level": "caution", "title": "%d%% of this month's budget used" % (share * 100),
+                        "detail": "$%.2f of $%.2f (API-equivalent)." % (cost["month"], budget)})
+    for w in (limits or {}).get("windows") or []:
+        if (w.get("percent") or 0) >= 80:
+            out.append({"level": "caution", "title": "%s at %d%%" % (w.get("label"), w["percent"]),
+                        "detail": "Claude slows down or stops at 100%% until the limit resets."})
+    for s in live["running"]:
+        c = s.get("context")
+        if c and c["tokens"] / c["window"] >= 0.85:
+            out.append({"level": "info", "title": "%s is %d%% through its context window" % (s["title"], 100 * c["tokens"] / c["window"]),
+                        "detail": "Claude compacts the conversation soon; start a new session for a fresh task."})
+    if activity.get("tool_errors"):
+        out.append({"level": "info", "title": "%d tool calls failed in %d days" % (activity["tool_errors"], activity["window"]),
+                    "detail": "See Events for which ones."})
+    return out
+
+
+def new_alerts(autos, health_items):
+    """Warnings not alerted before (failed runs, budget), remembered in cache/alerts_sent.json."""
+    sent = set(load_json(CACHE / "alerts_sent.json", []) or [])
+    fresh = []
+    for a in autos:
+        last = a["runs"][0] if a["runs"] else {}
+        if last.get("status") == "failed":
+            fresh.append(("run:%s:%s" % (a["id"], last.get("started_at")), "Run failed: " + a["name"]))
+    for h in health_items:
+        if h["level"] == "warning" and h["title"].startswith("Over this month"):
+            fresh.append(("budget:" + NOW.strftime("%Y-%m"), "Claude Pit: " + h["title"] + " " + h["detail"]))
+    fresh = [(k, msg) for k, msg in fresh if k not in sent]
+    if fresh:
+        CACHE.mkdir(exist_ok=True)
+        (CACHE / "alerts_sent.json").write_text(json.dumps(sorted(sent | {k for k, _ in fresh})), encoding="utf-8")
+    return [msg for _, msg in fresh]
+
+
 # ---------------------------------------------------------------- assemble
 
 def collect(routines_file=None):
@@ -753,15 +1010,27 @@ def collect(routines_file=None):
         a["steps"], a["steps_source"], a["prompt_hash"] = flow_steps(a, flows)
 
     items["mcp"] = connector_rows(routines, cfg, needs) + items["mcp"] + desktop_app_mcp()
+    items["memory"] = memory_files(cfg)
+    meta = app_sessions()
+    act, cost, history, events = transcripts(meta)
+    live = live_sessions(meta)
+    try:
+        budget = float((load_json(CACHE / "settings.json", {}) or {}).get("monthly_budget_usd") or 0) or None
+    except (TypeError, ValueError):
+        budget = None
+    cost["budget"] = budget
     report = health(autos, plugins, items)
+    extra = usage_health(cost, budget, live["limits"], live, act)
+    report = [h for h in report if h["level"] != "ok" or not any(x["level"] in ("warning", "caution") for x in extra)]
+    report = sorted(extra + report, key=lambda x: {"warning": 0, "caution": 1, "info": 2, "ok": 3}[x["level"]])
     if more:
         report.insert(0, {"level": "caution", "title": "Only the first page of routines was read",
                           "detail": "The routines API said there are more."})
-    return {"version": 2, "generated_at": NOW.isoformat(), "routines_synced_at": synced,
+    return {"version": 3, "generated_at": NOW.isoformat(), "routines_synced_at": synced,
             "timezone": local_tz(),
             "settings": {"model": settings.get("model") or "", "effort": settings.get("effortLevel") or ""},
-            "automations": autos, "plugins": plugins, **items, "health": report, "activity": activity(),
-            "live": live_sessions(), "pit_dir": str(ROOT).replace(str(HOME), "~", 1)}
+            "automations": autos, "plugins": plugins, **items, "health": report, "activity": act, "cost": cost,
+            "history": history, "events": events, "live": live, "pit_dir": str(ROOT).replace(str(HOME), "~", 1)}
 
 
 SKELETON = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -775,7 +1044,7 @@ def inline_safe(text):
     return text.replace("</", "<\\/").replace("<!--", "<\\!--")
 
 
-LIBRARY = ("plugins", "mcp", "skills", "agents", "commands", "hooks")  # changes rarely, so it ships apart
+LIBRARY = ("plugins", "mcp", "skills", "agents", "commands", "hooks", "memory")  # changes rarely, so it ships apart
 
 
 def build(data):
@@ -859,7 +1128,15 @@ def selftest():
                 {"type": "user", "timestamp": "3", "toolUseResult": {}, "message": {"content": [{"type": "tool_result"}]}},
                 {"type": "assistant", "timestamp": "4", "message": {"content": [{"type": "text", "text": "Done."}]}}]
         f.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
-        assert [e["label"] for e in tail_events(f)] == ["Reply", "Read b.py", "Your prompt"], tail_events(f)
+        evs, ctx, _ = tail_events(f)
+        assert [e["label"] for e in evs] == ["Reply", "Read b.py", "Your prompt"] and ctx == 0, evs
+    opus = {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cache_read_input_tokens": 1_000_000,
+            "cache_creation_input_tokens": 3_000_000, "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000}}
+    assert abs(message_cost("claude-opus-5-5", opus) - (4 + 20 + 0.20 + 2 * 4 * 1.25 + 4 * 2)) < 1e-9
+    assert message_cost("claude-opus-5", {"output_tokens": 1_000_000}) == 25  # not matched as opus-5-5
+    assert message_cost("claude-opus-5-5", dict(opus, speed="fast")) == 2 * message_cost("claude-opus-5-5", opus)
+    assert message_cost("gpt-x", opus) is None
+    assert context_window("claude-haiku-4-5") == 200_000 and context_window("claude-opus-5-5") == 1_000_000
     print("selftest ok")
 
 
@@ -868,11 +1145,14 @@ def main():
     ap.add_argument("--routines", metavar="FILE", help="RemoteTrigger `list` result to import")
     ap.add_argument("--selftest", action="store_true", help="run the built-in checks and exit")
     ap.add_argument("--live", action="store_true", help="print running sessions as JSON and exit (used by the desktop app)")
+    ap.add_argument("--search", metavar="TEXT", help="print sessions whose messages contain TEXT as JSON and exit")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     if args.live:
         return print(json.dumps(live_sessions(), ensure_ascii=False, separators=(",", ":")))
+    if args.search is not None:
+        return print(json.dumps(search_transcripts(args.search), ensure_ascii=False, separators=(",", ":")))
     data = collect(args.routines)
     page, changed = build(data)
     counts = ", ".join("%d %s" % (len(data[k]), k) for k in
@@ -880,6 +1160,8 @@ def main():
     print("Built %s: %s; %d sessions in %d days" % (page, counts, data["activity"]["totals"]["window_sessions"],
                                                    data["activity"]["window"]))
     print("library.json changed" if changed else "library.json unchanged")
+    for msg in new_alerts(data["automations"], data["health"]):
+        print("ALERT: " + msg)
     for a in data["automations"]:
         if a["steps_source"] == "auto" and a.get("prompt"):
             print("needs step labels: %s %s (prompt hash %s)" % (a["id"], a["name"], a["prompt_hash"]))

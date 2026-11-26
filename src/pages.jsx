@@ -1,7 +1,8 @@
-// One component per sidebar page. Each gets the whole snapshot (`data`) and the current time (`now`).
+// One component per sidebar page. Each gets the snapshot (`data`), the current time (`now`) and `ctl`:
+// desktop-app controls (live updates, file reading, search, settings) plus copy-to-clipboard.
 import {
-  PageHead, Card, Stat, Pill, Tag, Empty, Search, Seg, Donut, Bars, HBars, Flow, MiniFlow,
-  fmt, rel, T, num, compact, plural, sum, matches, source, model, upcomingRuns, issues, needsLook, status, result,
+  PageHead, Card, Stat, Pill, Tag, Empty, Search, Seg, Donut, Bars, HBars, Meter, Flow, MiniFlow, Icon,
+  fmt, rel, T, num, compact, usd, plural, sum, matches, source, model, upcomingRuns, issues, needsLook, status, result,
 } from "./ui.jsx";
 
 const { useState } = React;
@@ -24,10 +25,10 @@ const MCP_GROUPS = [
 const mcpMix = (mcp) => MCP_GROUPS.map(([key, label, color]) => ({ key, label, color, value: mcp.filter((m) => m.surface === key).length }));
 
 const FAMILIES = [["opus", "Opus", "var(--c1)"], ["sonnet", "Sonnet", "var(--c2)"], ["haiku", "Haiku", "var(--c3)"], ["fable", "Fable", "var(--c5)"]];
-const modelMix = (models) => {
+const modelMix = (models, field) => {
   const fam = (name) => (FAMILIES.find(([k]) => name.includes(k)) || ["other"])[0];
   return [...FAMILIES, ["other", "Other", "var(--c4)"]].map(([key, label, color]) => ({
-    key, label, color, value: sum(models.filter((m) => fam(m.name) === key), "output_tokens"),
+    key, label, color, value: sum(models.filter((m) => fam(m.name) === key), field),
   }));
 };
 
@@ -68,7 +69,7 @@ function NowBanner({ live }) {
 function LiveBar({ ctl, live, now }) {
   const msg = {
     live: [<><span className="live-dot" aria-hidden="true" /> Live · updated {rel(live.at, now)}</>, null],
-    prompt: ["Watch sessions as they happen. Live updates need full access: the app runs collect.py --live every 5 seconds and only reads.", ["Turn on live updates", ctl.enable]],
+    prompt: ["Watch sessions as they happen. Live updates need full access: the app runs collect.py every 5 seconds and only reads.", ["Turn on live updates", ctl.enable]],
     denied: ["Live updates are turned off for this app.", ["Open permissions", ctl.manage]],
     install: ["Live updates run in the Claude Pit desktop app. This page shows the last snapshot.", ["Install as app", ctl.install]],
     error: [`Live update failed: ${ctl.error}`, ["Try again", ctl.enable]],
@@ -98,20 +99,22 @@ function SessionCard({ s, now }) {
           </div>
           {s.events.length > 0 && (
             <ol className="timeline">
-              {s.events.map((e, i) => (
-                <li key={i} className={e.kind}><time>{fmt(e.t, T.time)}</time><span>{e.label}</span></li>
-              ))}
+              {s.events.map((e, i) => <li key={i} className={e.kind}><time>{fmt(e.t, T.time)}</time><span>{e.label}</span></li>)}
             </ol>
           )}
         </div>
-        <dl className="kv">{kv.filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{v}</dd></React.Fragment>)}</dl>
+        <div className="stack">
+          {s.context && <Meter label="Context window" pct={(s.context.tokens / s.context.window) * 100}
+            sub={`${compact(s.context.tokens)} of ${compact(s.context.window)} tokens`} />}
+          <dl className="kv">{kv.filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{v}</dd></React.Fragment>)}</dl>
+        </div>
       </div>
     </article>
   );
 }
 
 export function Live({ data, now, ctl }) {
-  const live = data.live || { at: data.generated_at, running: [], recent: [] };
+  const live = data.live;
   const busy = live.running.filter((s) => s.status === "busy").length;
   return (
     <>
@@ -123,7 +126,7 @@ export function Live({ data, now, ctl }) {
         {live.recent.length ? (
           <div className="rows">
             {live.recent.map((r) => (
-              <div className="row" key={r.id} style={{ gridTemplateColumns: "minmax(0,1fr) auto" }}>
+              <div className="row r2" key={r.id}>
                 <div>
                   <span className="nm sans">{r.title}</span>
                   <div className="sub">{[r.project, model(r.model), r.turns && plural(r.turns, "turn")].filter(Boolean).join(" · ")}</div>
@@ -141,7 +144,8 @@ export function Live({ data, now, ctl }) {
 // ---------- Monitor
 export function Overview({ data, now }) {
   const next = upcomingRuns(data.automations, 60, now)[0];
-  const act = data.activity;
+  const c = data.cost, lim = data.live.limits;
+  const [five, week] = lim ? lim.windows : [];
   const all = issues(data, now), look = needsLook(all);
   const by = (list, s) => list.filter((x) => x.surface === s).length;
   return (
@@ -150,10 +154,10 @@ export function Overview({ data, now }) {
       <NowBanner live={data.live} />
       <div className="stats">
         <Stat href="#automations" label="Automations" value={data.automations.length} sub={`${data.automations.filter((a) => a.enabled).length} active`} />
+        <Stat href="#usage" label="Cost · this month" value={usd(c.month)} sub={c.budget ? `${Math.round((c.month / c.budget) * 100)}% of ${usd(c.budget)}` : `today ${usd(c.today)}`} />
+        <Stat href="#usage" label="5-hour limit" value={five ? `${five.percent}%` : "—"} sub={week ? `weekly ${week.percent}%` : "no plan data"} />
         <Stat href="#skills" label="Skills" value={data.skills.length} sub={`Code ${by(data.skills, "code")} · Chat ${by(data.skills, "chat")}`} />
-        <Stat href="#plugins" label="Plugins" value={data.plugins.length} sub={`Code ${by(data.plugins, "code")} · Chat ${by(data.plugins, "chat")}`} />
         <Stat href="#mcp" label="MCP servers" value={data.mcp.length} sub={`${by(data.mcp, "claude.ai")} connectors`} />
-        <Stat href="#activity" label="Sessions · 30 days" value={act.totals.window_sessions || 0} sub={`${act.totals.active_days} active days`} />
       </div>
       <div className="grid g-next">
         {next ? (
@@ -164,10 +168,10 @@ export function Overview({ data, now }) {
             <div className="next-name">{next.a.name}</div>
             <div className="next-sub">{next.a.where} · {next.a.schedule}</div>
           </a>
-        ) : (
-          <Card title="Next run"><Empty>Nothing scheduled.</Empty></Card>
-        )}
-        <Card title="Sessions" meta="Last 14 days"><Bars days={act.days.slice(-14)} field="sessions" label="Claude Code sessions per day, last 14 days" /></Card>
+        ) : <Card title="Next run"><Empty>Nothing scheduled.</Empty></Card>}
+        <Card title="Cost per day" meta="Last 14 days · API-equivalent">
+          <Bars days={data.activity.days.slice(-14)} field="cost" format={usd} label="API-equivalent cost per day, last 14 days" />
+        </Card>
       </div>
       <div className="grid g3">
         <Card title="Skills by source"><Donut items={skillMix(data.skills)} label="Skills by source" caption="skills" /></Card>
@@ -178,24 +182,83 @@ export function Overview({ data, now }) {
   );
 }
 
-export function Automations({ data, now }) {
+const KINDS = [["all", "All"], ["tool", "Tools"], ["prompt", "Prompts"], ["reply", "Replies"], ["error", "Errors"]];
+
+export function Events({ data, now }) {
+  const [kind, setKind] = useState("all");
+  const [q, setQ] = useState("");
+  const seen = new Set();
+  const all = [...data.live.running.flatMap((s) => s.events.map((e) => ({ ...e, sid: s.id, session: s.title, project: s.project }))), ...data.events]
+    .filter((e) => { const k = `${e.sid}|${e.t}|${e.label}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((x, y) => Date.parse(y.t) - Date.parse(x.t));
+  const list = all.filter((e) => (kind === "all" || e.kind === kind) && matches(q, e.label, e.session, e.project));
+  const groups = [];
+  for (const e of list.slice(0, 250)) {
+    const day = fmt(e.t, T.day), g = groups[groups.length - 1];
+    if (g && g.day === day) g.items.push(e); else groups.push({ day, items: [e] });
+  }
+  const n = data.activity.event_counts || {};
+  return (
+    <>
+      <PageHead title="Events" sub="Tool calls, prompts, replies and tool errors across all sessions, last 7 days" />
+      <div className="stats s4">
+        <Stat label="Tool calls" value={num(n.tool)} sub="7 days" />
+        <Stat label="Prompts" value={num(n.prompt)} sub="7 days" />
+        <Stat label="Replies" value={num(n.reply)} sub="7 days" />
+        <Stat label="Tool errors" value={num(n.error)} sub="7 days" />
+      </div>
+      <div className="toolbar">
+        <Search value={q} onChange={setQ} label="Search events" />
+        <Seg value={kind} onChange={setKind} label="Show" options={KINDS} />
+      </div>
+      {groups.length ? groups.map((g) => (
+        <Card key={g.day} title={g.day} meta={plural(g.items.length, "event")}>
+          <ol className="stream">
+            {g.items.map((e, i) => (
+              <li key={i} className={e.kind}>
+                <time>{fmt(e.t, T.time)}</time><i aria-hidden="true" />
+                <span className="ev">{e.label}</span>
+                <span className="ev-s">{e.session} · {e.project}</span>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )) : <Empty>No events match.</Empty>}
+      {list.length > 250 && <p className="hint">Showing the newest 250 of {list.length}.</p>}
+    </>
+  );
+}
+
+export function Automations({ data, now, ctl }) {
   const autos = data.automations;
   return (
     <>
       <PageHead title="Automations" sub={`${plural(autos.length, "automation")} · ${autos.filter((a) => a.enabled).length} active`} />
-      {autos.length ? autos.map((a) => <AutoCard key={a.id} a={a} now={now} />)
+      {autos.length ? autos.map((a) => <AutoCard key={a.id} a={a} now={now} ctl={ctl} />)
         : <Empty>No automations yet. Type /schedule in Claude Code, or ask Cowork to run a task on a schedule.</Empty>}
     </>
   );
 }
 
-function AutoCard({ a, now }) {
+// Run, pause and resume go through Claude Code (/claude-pit), which holds the sign-in these actions need.
+function Actions({ a, ctl }) {
+  if (a.kind !== "cloud" && a.kind !== "desktop") return null;
+  const go = (verb, what) => () => ctl.copy(`/claude-pit ${verb} ${a.id}`, `Paste it in Claude Code to ${what}.`);
+  return (
+    <div className="actions">
+      <button type="button" className="btn" onClick={go("run", "run it now")}>Run now</button>
+      <button type="button" className="btn" onClick={a.enabled ? go("pause", "pause it") : go("resume", "resume it")}>{a.enabled ? "Pause" : "Resume"}</button>
+    </div>
+  );
+}
+
+function AutoCard({ a, now, ctl }) {
   const [tone, word] = status(a);
   const conn = a.connectors.map((c) => c.replace(/_/g, " "));
   const dot = { succeeded: "ok", failed: "bad", running: "info" };
   return (
     <article className="card">
-      <div className="auto-h"><h2>{a.name}</h2><Pill tone={tone}>{word}</Pill><Tag>{a.origin}</Tag></div>
+      <div className="auto-h"><h2>{a.name}</h2><Pill tone={tone}>{word}</Pill><Tag>{a.origin}</Tag><Actions a={a} ctl={ctl} /></div>
       <div className="auto-body">
         <Flow a={a} />
         <dl className="kv">
@@ -212,7 +275,7 @@ function AutoCard({ a, now }) {
                     <i className={dot[r.status] || ""} />
                     <span>{fmt(r.started_at, T.full)}</span>
                     <span className="soft">{r.status}</span>
-                    {r.url && <a href={r.url} target="_blank" rel="noopener" style={{ color: "var(--link)" }}>Open</a>}
+                    {r.url && <a href={r.url} target="_blank" rel="noopener" className="link">Open</a>}
                   </div>
                 ))}
               </div>
@@ -272,28 +335,106 @@ export function Schedule({ data, now }) {
   );
 }
 
-export function Activity({ data }) {
-  const act = data.activity, d = act.days;
-  const projects = act.projects.map((p) => ({ label: p.name, value: p.sessions, title: `${p.name}: last active ${fmt(p.last, T.full)}` }));
-  const skills = act.skills_used.slice(0, 8).map((s) => ({ label: s.name, value: s.count, title: `${s.name}: last used ${fmt(s.last, T.full)}` }));
+// ---------- Insights
+export function Usage({ data, now }) {
+  const a = data.activity, c = data.cost, lim = data.live.limits;
+  const top = [...data.history].sort((x, y) => y.cost - x.cost).slice(0, 8)
+    .map((h) => ({ label: h.title, value: h.cost, title: `${h.title} · ${h.project} · ${fmt(h.last, T.date)}` }));
   return (
     <>
-      <PageHead title="Activity" sub={`Claude Code on this computer · last ${act.window} days`} />
-      <div className="stats s4">
-        <Stat label="Sessions" value={num(act.totals.window_sessions || 0)} sub={`${num(act.totals.sessions)} all time`} />
-        <Stat label="Replies" value={compact(sum(d, "messages"))} sub={`${compact(act.totals.messages)} all time`} />
-        <Stat label="Output tokens" value={compact(sum(d, "output_tokens"))} sub={`${compact(sum(d, "input_tokens"))} input`} />
-        <Stat label="Active days" value={act.totals.active_days} sub={`of ${act.window}`} />
+      <PageHead title="Usage & cost" sub={`Claude Code on this computer · last ${a.window} days`} />
+      <div className="grid g-next">
+        <Card title="Plan limits" meta={lim ? `${lim.plan || "Plan"} · ${rel(lim.at, now)}` : ""}>
+          {lim ? <div className="stack">{lim.windows.map((w) => (
+            <Meter key={w.label} label={w.label} pct={w.percent} sub={w.resets_at ? `Resets ${rel(w.resets_at, now)}` : "Reset time not known"} />
+          ))}</div> : <Empty>No plan data yet. Type /claude-pit in Claude Code.</Empty>}
+        </Card>
+        <div className="stack">
+          <div className="stats s3">
+            <Stat label="Today" value={usd(c.today)} sub="API-equivalent" />
+            <Stat label="This month" value={usd(c.month)} sub={c.budget ? `of ${usd(c.budget)} budget` : "no budget set"} />
+            <Stat label={`Last ${a.window} days`} value={usd(c.window)} sub={`${compact(sum(a.days, "output_tokens"))} output tokens`} />
+          </div>
+          {c.budget ? <Card><Meter label="Monthly budget" pct={(c.month / c.budget) * 100} sub={`${usd(c.month)} of ${usd(c.budget)} · alerts at 80% and 100%`} /></Card>
+            : <a className="now" href="#settings"><b>Set a monthly budget</b><span className="now-what">Get an alert when this month's cost passes it</span></a>}
+        </div>
       </div>
       <div className="grid g-wide">
-        <Card title="Sessions per day"><Bars days={d} field="sessions" label="Sessions per day" /></Card>
-        <Card title="Output tokens by model"><Donut items={modelMix(act.models)} label="Output tokens by model" caption="tokens" /></Card>
+        <Card title="Cost per day" meta="USD"><Bars days={a.days} field="cost" format={usd} label="API-equivalent cost per day" /></Card>
+        <Card title="Cost by model"><Donut items={modelMix(a.models, "cost")} label="Cost by model" caption="USD" format={usd} /></Card>
       </div>
-      <Card title="Output tokens per day"><Bars days={d} field="output_tokens" label="Output tokens per day" format={compact} /></Card>
       <div className="grid g2">
-        <Card title="Top projects" meta="sessions">{projects.length ? <HBars items={projects} /> : <Empty>No sessions yet.</Empty>}</Card>
-        <Card title="Most used skills" meta="uses">{skills.length ? <HBars items={skills} /> : <Empty>No skill use recorded.</Empty>}</Card>
+        <Card title="Most expensive sessions" meta="all time">{top.length ? <HBars items={top} format={usd} /> : <Empty>No sessions yet.</Empty>}</Card>
+        <Card title="Top tools" meta={`${a.window} days`}>{a.tools && a.tools.length ? <HBars items={a.tools.map((t) => ({ label: t.name, value: t.count }))} /> : <Empty>No tool calls yet.</Empty>}</Card>
       </div>
+      <div className="grid g-wide">
+        <Card title="Sessions per day"><Bars days={a.days} field="sessions" label="Sessions per day" /></Card>
+        <Card title="Output tokens by model"><Donut items={modelMix(a.models, "output_tokens")} label="Output tokens by model" caption="tokens" /></Card>
+      </div>
+      <div className="grid g2">
+        <Card title="Top projects" meta="sessions">{a.projects.length ? <HBars items={a.projects.map((p) => ({ label: p.name, value: p.sessions }))} /> : <Empty>No sessions yet.</Empty>}</Card>
+        <Card title="Most used skills" meta="uses">{a.skills_used.length ? <HBars items={a.skills_used.slice(0, 8).map((s) => ({ label: s.name, value: s.count }))} /> : <Empty>No skill use recorded.</Empty>}</Card>
+      </div>
+      <p className="fine">Cost is what the same tokens would cost at Anthropic API list prices, including cache writes and reads. {lim && lim.plan ? `Your ${lim.plan} plan is a fixed monthly price, so this is a gauge of use, not a bill.` : ""}</p>
+    </>
+  );
+}
+
+export function History({ data, now, ctl }) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState("last");
+  const [found, setFound] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const list = data.history.filter((h) => matches(q, h.title, h.project, h.app, model(h.model)))
+    .sort((a, b) => (sort === "cost" ? b.cost - a.cost : sort === "replies" ? b.replies - a.replies : Date.parse(b.last) - Date.parse(a.last)));
+  const deep = () => {
+    setBusy(true); setErr("");
+    ctl.search(q).then(setFound).catch((e) => setErr(e.message || String(e))).finally(() => setBusy(false));
+  };
+  return (
+    <>
+      <PageHead title="History" sub={`${plural(data.history.length, "session")} · ${usd(sum(data.history, "cost"))} API-equivalent`} />
+      <div className="toolbar">
+        <Search value={q} onChange={(v) => { setQ(v); setFound(null); }} label="Search sessions" />
+        <Seg value={sort} onChange={setSort} label="Sort" options={[["last", "Recent"], ["cost", "Cost"], ["replies", "Replies"]]} />
+        {ctl.full && <button type="button" className="btn" disabled={busy || q.trim().length < 2} onClick={deep}>{busy ? "Searching…" : "Search inside messages"}</button>}
+      </div>
+      {!ctl.full && <p className="hint">Search inside messages works in the Claude Pit desktop app with live updates on. Here it searches titles and projects.</p>}
+      {err && <p className="hint bad">{err}</p>}
+      {found && (
+        <Card title={`“${q}” in messages`} meta={plural(found.length, "session")}>
+          {found.length ? (
+            <div className="rows">
+              {found.map((h) => (
+                <div className="row r2" key={h.id}>
+                  <div>
+                    <span className="nm sans">{h.title}</span>
+                    <div className="sub">{h.project} · {rel(h.last, now)} · {h.matches} {h.matches === 1 ? "match" : "matches"}</div>
+                    {h.snippets.map((s, i) => <p className="snippet" key={i}><b>{s.who === "you" ? "You" : "Claude"}</b> {s.text}</p>)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : <Empty>Nothing found.</Empty>}
+        </Card>
+      )}
+      <Card>
+        {list.length ? (
+          <div className="rows">
+            {list.map((h) => (
+              <div className="row hist" key={h.id}>
+                <div>
+                  <span className="nm sans">{h.title}</span>
+                  <div className="sub">{[h.project, h.app, model(h.model), `${fmt(h.started, T.short)} – ${rel(h.last, now)}`].filter(Boolean).join(" · ")}</div>
+                </div>
+                <span className="mono small soft">{h.replies} {h.replies === 1 ? "reply" : "replies"} · {plural(h.tools, "tool")}</span>
+                <b className="mono">{usd(h.cost)}</b>
+              </div>
+            ))}
+          </div>
+        ) : <Empty>No sessions match.</Empty>}
+      </Card>
     </>
   );
 }
@@ -365,10 +506,10 @@ export function Mcp({ data }) {
           const list = data.mcp.filter((m) => m.surface === key);
           return list.length ? (
             <Card key={key} title={label} meta={list.length}>
-              <p className="soft small" style={{ margin: "-8px 0 14px" }}>{note}</p>
+              <p className="soft small note">{note}</p>
               <div className="rows">
                 {list.map((m, i) => (
-                  <div className="row" key={m.name + m.scope + i} style={{ gridTemplateColumns: "minmax(0,1fr) auto" }}>
+                  <div className="row r2" key={m.name + m.scope + i}>
                     <div>
                       <span className="nm sans">{m.name}</span>
                       <div className="sub">{[m.scope !== "connector" && source(m.scope), m.transport, m.host].filter(Boolean).join(" · ")}</div>
@@ -397,7 +538,7 @@ export function Agents({ data }) {
         <Card title="Slash commands" meta={commands.length}>
           <div className="rows">
             {commands.map((c, i) => (
-              <div className="row" key={c.source + c.name + i} style={{ gridTemplateColumns: "minmax(0,14rem) minmax(0,1fr) auto" }}>
+              <div className="row cmd" key={c.source + c.name + i}>
                 <span className="nm">/{c.name}</span><span className="sub">{c.description}</span><Tag>{source(c.source)}</Tag>
               </div>
             ))}
@@ -446,6 +587,50 @@ export function Hooks({ data }) {
   );
 }
 
+export function Memory({ data, ctl }) {
+  const [sel, setSel] = useState(null);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const open = (m) => {
+    setSel(m); setText(""); setErr("");
+    if (!ctl.full) { setErr("Reading files works in the Claude Pit desktop app with live updates on."); return; }
+    ctl.readFile(m.path).then((t) => setText(t || "(empty file)")).catch((e) => setErr(e.message || String(e)));
+  };
+  const groups = [["user", "Your CLAUDE.md", "Read in every session"], ["project", "Project CLAUDE.md", "Read in sessions inside that folder"],
+    ["memory", "Auto memory", "Notes Claude keeps between sessions"]];
+  return (
+    <>
+      <PageHead title="Memory" sub={`${plural(data.memory.length, "file")} Claude reads when a session starts`} />
+      <div className="grid g-memo">
+        <div className="stack">
+          {groups.map(([k, label, note]) => {
+            const list = data.memory.filter((m) => m.scope === k);
+            return list.length ? (
+              <Card key={k} title={label} meta={note}>
+                <div className="rows">
+                  {list.map((m) => (
+                    <button type="button" key={m.path} className={`row pick${sel && sel.path === m.path ? " on" : ""}`} onClick={() => open(m)}>
+                      <div>
+                        <span className="nm">{m.name}</span>
+                        <div className="sub">{m.description}</div>
+                      </div>
+                      <span className="soft small mono">{m.project} · {(m.size / 1024).toFixed(1)} KB</span>
+                    </button>
+                  ))}
+                </div>
+              </Card>
+            ) : null;
+          })}
+          {!data.memory.length && <Empty>No CLAUDE.md or memory files found.</Empty>}
+        </div>
+        <Card className="viewer" title={sel ? sel.name : "Pick a file"} meta={sel ? sel.path : ""}>
+          {text ? <pre className="file">{text}</pre> : <p className="soft">{err || (sel ? "Loading…" : "Choose a file to read it here.")}</p>}
+        </Card>
+      </div>
+    </>
+  );
+}
+
 // ---------- System
 export function Health({ data, now }) {
   const all = issues(data, now), look = needsLook(all);
@@ -453,6 +638,60 @@ export function Health({ data, now }) {
     <>
       <PageHead title="Health" sub={look.length ? `${plural(look.length, "item")} to check` : "Nothing needs attention"} />
       <Card><HealthList items={all} /></Card>
+    </>
+  );
+}
+
+export function Settings({ data, now, ctl }) {
+  const [budget, setBudget] = useState(data.cost.budget || "");
+  const [msg, setMsg] = useState("");
+  const refresh = data.automations.find((a) => a.id === "desktop:claude-pit-refresh");
+  const save = () => {
+    const n = Number(budget || 0);
+    if (!(n >= 0)) { setMsg("Enter an amount in dollars, or 0 to turn the budget off."); return; }
+    if (ctl.full) ctl.saveBudget(n).then(() => setMsg(n ? `Saved. Alerts at 80% and 100% of ${usd(n)}.` : "Budget turned off.")).catch((e) => setMsg(e.message || String(e)));
+    else ctl.copy(`/claude-pit budget ${n}`, "Paste it in Claude Code to save the budget.");
+  };
+  const app = ctl.mode !== "snapshot" && ctl.mode !== "install";
+  const perm = (name) => ctl.perms[name] || "unavailable";
+  return (
+    <>
+      <PageHead title="Settings" />
+      <Card title="Monthly budget" meta="API-equivalent USD">
+        <form className="form" onSubmit={(e) => { e.preventDefault(); save(); }}>
+          <label htmlFor="budget">Alert me when this month's cost passes</label>
+          <div className="inline">
+            <span className="prefix">$</span>
+            <input id="budget" type="number" min="0" step="1" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} />
+            <button type="submit" className="btn">{ctl.full ? "Save" : "Copy command"}</button>
+          </div>
+          <p className="hint">{msg || `This month so far: ${usd(data.cost.month)}. Alerts show in Health, as a notification in the desktop app, and as a push from the scheduled refresh.`}</p>
+        </form>
+      </Card>
+      <Card title="Desktop app" meta={app ? "Claude Pit app" : "Install to use these"}>
+        <div className="rows">
+          <div className="row r2">
+            <div><span className="nm sans">Live updates</span><div className="sub">Follow sessions every 5 seconds. Needs full access; only reads.</div></div>
+            {ctl.mode === "live" ? <Pill tone="ok">On</Pill> : app ? <button type="button" className="btn" onClick={ctl.enable}>Turn on</button> : <Pill tone="off">App only</Pill>}
+          </div>
+          <div className="row r2">
+            <div><span className="nm sans">Menu bar</span><div className="sub">Working sessions, next run, cost and limits at the top of your screen.</div></div>
+            {app ? <button type="button" className="btn" aria-pressed={ctl.trayOn} onClick={ctl.toggleTray}>{ctl.trayOn ? "Turn off" : "Turn on"}</button> : <Pill tone="off">App only</Pill>}
+          </div>
+          <div className="row r2">
+            <div><span className="nm sans">Notifications</span><div className="sub">When a session finishes or needs you, a run fails, or the budget is passed.</div></div>
+            {perm("notifications") === "granted" ? <Pill tone="ok">On</Pill> : app ? <button type="button" className="btn" onClick={ctl.enableNotify}>Turn on</button> : <Pill tone="off">App only</Pill>}
+          </div>
+        </div>
+        {ctl.mode === "install" && <button type="button" className="btn" onClick={ctl.install}>Install as app</button>}
+      </Card>
+      <Card title="Refresh">
+        <p className="hint">
+          {refresh ? `${refresh.name} runs ${refresh.schedule.toLowerCase()}` : "No refresh task found"}. Type <code>/claude-pit</code> in Claude Code to refresh now.
+          Last snapshot {fmt(data.generated_at, T.full)} ({rel(data.generated_at, now)}).
+        </p>
+        <button type="button" className="btn" onClick={() => ctl.copy("/claude-pit", "Paste it in Claude Code to refresh now.")}>Copy refresh command</button>
+      </Card>
     </>
   );
 }

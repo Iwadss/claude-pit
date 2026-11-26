@@ -5,22 +5,28 @@ const { useState, useEffect } = React;
 export const PAGES = [
   { id: "overview", label: "Overview", icon: "grid", group: "Monitor" },
   { id: "live", label: "Live", icon: "radio", group: "Monitor" },
+  { id: "events", label: "Events", icon: "list", group: "Monitor" },
   { id: "automations", label: "Automations", icon: "flow", group: "Monitor", count: (d) => d.automations.length },
   { id: "schedule", label: "Schedule", icon: "calendar", group: "Monitor" },
-  { id: "activity", label: "Activity", icon: "pulse", group: "Monitor" },
+  { id: "usage", label: "Usage & cost", icon: "pulse", group: "Insights" },
+  { id: "history", label: "History", icon: "clock", group: "Insights", count: (d) => d.history.length },
   { id: "skills", label: "Skills", icon: "spark", group: "Library", count: (d) => d.skills.length },
   { id: "plugins", label: "Plugins", icon: "box", group: "Library", count: (d) => d.plugins.length },
   { id: "mcp", label: "MCP", icon: "plug", group: "Library", count: (d) => d.mcp.length },
   { id: "agents", label: "Agents", icon: "bot", group: "Library", count: (d) => d.agents.length },
   { id: "hooks", label: "Hooks", icon: "hook", group: "Library", count: (d) => d.hooks.length },
+  { id: "memory", label: "Memory", icon: "book", group: "Library", count: (d) => d.memory.length },
   { id: "health", label: "Health", icon: "shield", group: "System" },
+  { id: "settings", label: "Settings", icon: "gear", group: "System" },
 ];
+export const GROUPS = ["Monitor", "Insights", "Library", "System"];
 
 // ---------- formatting
 const nf = new Intl.NumberFormat();
 const cf = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 export const num = (x) => nf.format(x || 0);
 export const compact = (x) => cf.format(x || 0);
+export const usd = (x) => "$" + ((x || 0) >= 100 ? Math.round(x).toLocaleString() : (x || 0).toFixed(2));
 export const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 export const sum = (rows, key) => rows.reduce((s, r) => s + (r[key] || 0), 0);
 export const matches = (q, ...xs) => !q || xs.join(" ").toLowerCase().includes(q.trim().toLowerCase());
@@ -100,6 +106,11 @@ const PATHS = {
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   close: <path d="M6 6l12 12M18 6L6 18" />,
   search: <><circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4.2-4.2" /></>,
+  list: <><path d="M9 6h11M9 12h11M9 18h11" /><circle cx="4.5" cy="6" r="1" /><circle cx="4.5" cy="12" r="1" /><circle cx="4.5" cy="18" r="1" /></>,
+  clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>,
+  book: <><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z" /><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19" /></>,
+  gear: <><circle cx="12" cy="12" r="3" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7" /></>,
+  copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" /></>,
 };
 export function Icon({ name, size = 16 }) {
   return (
@@ -156,7 +167,7 @@ export function Seg({ value, onChange, options, label }) {
 
 // ---------- charts
 // Donut: largest slice at 12 o'clock, 2px surface gaps, legend with values (identity never by colour alone).
-export function Donut({ items, label, caption }) {
+export function Donut({ items, label, caption, format = compact }) {
   const [hot, setHot] = useState(null);
   const shown = items.filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
   const total = sum(shown, "value") || 1;
@@ -178,17 +189,17 @@ export function Donut({ items, label, caption }) {
               strokeDasharray={`${s.dash} ${C - s.dash}`} strokeDashoffset={-s.offset}
               style={{ stroke: s.color, opacity: hot && hot !== s.key ? 0.35 : 1 }}
               onMouseEnter={focus(s.key)} onMouseLeave={focus(null)}>
-              <title>{`${s.label}: ${num(s.value)}`}</title>
+              <title>{`${s.label}: ${format(s.value)}`}</title>
             </circle>
           ))}
         </g>
-        <text x="70" y="70" textAnchor="middle" className="donut-v">{compact(total)}</text>
+        <text x="70" y="70" textAnchor="middle" className="donut-v">{format(total)}</text>
         <text x="70" y="88" textAnchor="middle" className="donut-c">{caption}</text>
       </svg>
       <ul className="legend">
         {shown.map((x) => (
           <li key={x.key} className={hot && hot !== x.key ? "dim" : ""} onMouseEnter={focus(x.key)} onMouseLeave={focus(null)}>
-            <i style={{ background: x.color }} /><span>{x.label}</span><b>{compact(x.value)}</b><em>{Math.round((x.value / total) * 100)}%</em>
+            <i style={{ background: x.color }} /><span>{x.label}</span><b>{format(x.value)}</b><em>{Math.round((x.value / total) * 100)}%</em>
           </li>
         ))}
       </ul>
@@ -222,6 +233,21 @@ export function Bars({ days, field, label, format = num }) {
         <span>{fmt(days[mid].date + "T12:00:00", T.short)}</span>
         <span>Today</span>
       </div>
+    </div>
+  );
+}
+
+// A labelled 0-100% bar; amber from 80%, red at 100%.
+export function Meter({ label, pct, sub }) {
+  const p = Math.max(0, Math.min(100, Math.round(pct || 0)));
+  const tone = p >= 100 ? "bad" : p >= 80 ? "warn" : "";
+  return (
+    <div className="meter">
+      <div className="meter-h"><span>{label}</span><b className="mono">{p}%</b></div>
+      <div className={`meter-t ${tone}`} role="progressbar" aria-valuenow={p} aria-valuemin="0" aria-valuemax="100" aria-label={label}>
+        <i style={{ width: `${p}%` }} />
+      </div>
+      {sub && <small>{sub}</small>}
     </div>
   );
 }
