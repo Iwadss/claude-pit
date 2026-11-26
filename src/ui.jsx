@@ -123,8 +123,7 @@ export function Icon({ name, size = 16 }) {
 export function Logo() {
   const [x, y, w, h] = LOGO_VIEWBOX;
   return (
-    <svg width="30" height="30" viewBox={`${x - 24} ${y - 24} ${w + 48} ${h + 48}`} aria-hidden="true">
-      <rect x={x - 24} y={y - 24} width={w + 48} height={h + 48} rx="96" style={{ fill: "var(--ink)" }} />
+    <svg width="30" height="30" viewBox={`${x} ${y} ${w} ${h}`} aria-hidden="true">
       <path d={LOGO_PATH} fillRule="evenodd" style={{ fill: "var(--accent)" }} />
     </svg>
   );

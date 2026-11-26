@@ -46,8 +46,7 @@ function drawMark(g, size, pad, color) {
   g.fillStyle = color; g.fill(new Path2D(LOGO_PATH), "evenodd"); g.restore();
 }
 const dockIcon = () => canvasIcon(256, (g) => {
-  g.fillStyle = "#2d3142"; g.beginPath(); g.roundRect(0, 0, 256, 256, 56); g.fill();
-  drawMark(g, 256, 36, "#f08a59");
+  drawMark(g, 256, 8, "#e0703f");
 });
 // template image: black on transparent, macOS recolours it
 const trayIcon = () => canvasIcon(36, (g) => drawMark(g, 36, 1, "#000"));
